@@ -12,3 +12,4 @@ set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 add_subdirectory(1-reading-a-packet-from-nic)
+add_subdirectory(2-sending-a-packet-from-nic)
