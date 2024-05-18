@@ -55,7 +55,7 @@ int main(int argc, char **argv)
     // In the above example the DPDK EAL arguments are --lcores and -n. The user arguments are -s and -t. 
     // DPDK EAL argument `--lcores=0` means that this DPDK application will use core 0 to run the main function (main thread). 
     // A DPDK application sets the affinity of execution threads to specific logical cores to achieve performance.
-    // DPDK EAL argument `-n 4` means that this DPDK application 4 memory channels. 
+    // DPDK EAL argument `-n 4` means that this DPDK application uses 4 memory channels. 
     // The details are DPDK EAL arguments is present at: https://doc.dpdk.org/guides/linux_gsg/linux_eal_parameters.html
     int32_t return_val = rte_eal_init(argc, argv);
     if (return_val < 0) 

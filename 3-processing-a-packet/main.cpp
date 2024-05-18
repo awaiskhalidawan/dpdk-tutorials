@@ -23,6 +23,7 @@
 #include <iostream>
 #include <thread>
 #include <csignal>
+#include <vector>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
@@ -30,9 +31,77 @@
 
 static volatile sig_atomic_t exit_indicator = 0;
 
+static rte_ring* ring_buffer = nullptr;
+
 void terminate(int signal) 
 {
     exit_indicator = 1;
+}
+
+int process_packets(void *params)
+{
+    rte_mbuf* rx_packets[32];
+    uint8_t rx_count = 0;
+    uint64_t total_rx_packets = 0;
+
+    // We will print the logical core id (CPU id) on which this thread is going to be executed. rte_lcore_id() function will
+    // return the current logical core id (CPU id). 
+    std::cout << "Starting packet processing routine. Logical core id (CPU id): " << rte_lcore_id() << std::endl;
+
+    // Now continuously monitor the ring buffer for any incoming packets. 
+    while (!exit_indicator) {
+
+        // Check for any incoming packets in the ring buffer. We try to dequeue max 32 packets at max at a time.
+        rx_count = rte_ring_dequeue_burst(ring_buffer, reinterpret_cast<void **>(rx_packets), 32, nullptr);
+
+        if (!rx_count) {
+            // No packets are present in ring buffer. Check again.
+            continue;
+        }
+
+        // Packets received. Now we will process them.
+        for (uint8_t i = 0; i < rx_count; i++) {
+            total_rx_packets++;
+            rte_mbuf *const packet = rx_packets[i];
+            std::cout << "Packet received with length: " << packet->data_len << " total received packets: " << total_rx_packets << std::endl;
+            rte_pktmbuf_free(packet);
+        }
+    }
+    
+    std::cout << "Exiting packet processing routine. " << std::endl;
+    return 0;
+}
+
+int read_packets_from_interface(void *param)
+{
+    uint16_t *port_id = reinterpret_cast<uint16_t *>(param);
+    std::cout << "Starting packet reading routine. Logical core id (CPU id): " << rte_lcore_id() << std::endl;    
+    rte_mbuf *rx_packets[32];
+    uint16_t rx_count = 0;
+
+    // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
+    while (!exit_indicator) {
+
+        // Read the packets from interface. We read 32 packets at max at time.
+        rx_count = rte_eth_rx_burst(*port_id, 0, rx_packets, 32);
+
+        if (rx_count == 0) {
+            // No packets found. Check again.
+            continue;
+        }
+
+        // Packets received. Enqueue the packets in the ring buffer. Packet processing thread will read them from the ring buffer.
+        for (uint16_t i = 0; i < rx_count; i++) {
+            if (rte_ring_enqueue(ring_buffer, rx_packets[i]) != 0) {
+                std::cerr << "Unable to enqueue packets in the ring buffer. " << std::endl;
+                // Free the packet as we are not able to enqueue it in the ring buffer.
+                rte_pktmbuf_free(rx_packets[i]);
+            }
+        }
+    }
+    
+    std::cout << "Exiting packet reading routine. " << std::endl;
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -50,11 +119,14 @@ int main(int argc, char **argv)
     // call any further DPDK API.
     // The arguments passed to this programs are passed to rte_eal_init() DPDK API. A user must pass DPDK EAL arguments
     // before the application arguments. The DPDK EAL arguments and application arguments must be separated by '--'.
-    // For example: ./<dpdk_application> --lcores=0 -n 4 -- -s 1 -t 2. `--` will tell the rte_eal_init() that all the DPDK
+    // For example: ./<dpdk_application> --lcores=0,1 -n 4 -- -s 1 -t 2. `--` will tell the rte_eal_init() that all the DPDK
     // EAL arguments are present before this.  
     // In the above example the DPDK EAL arguments are --lcores and -n. The user arguments are -s and -t. 
-    // DPDK EAL argument `--lcores=0` means that this DPDK application will use core 0 to run the main function (main thread). 
-    // A DPDK application sets the affinity of execution threads to specific logical cores to achieve performance.
+    // DPDK EAL argument `--lcores=0,1` means that there are two logical cores (CPUs) assigned to this DPDK application. The 
+    // first logical core is 0 and second is 1. DPDK application will launch total_logical_cores worker threads in the application (including main)
+    // So in the above example, the DPDK application has two logical cores (0,1). The main function will run on first logical core (0)
+    // and an additional worker thread will be launched on the next logical core (1). A DPDK application sets the affinity of 
+    // execution threads to specific logical cores to achieve performance.
     // DPDK EAL argument `-n 4` means that this DPDK application uses 4 memory channels. 
     // The details are DPDK EAL arguments is present at: https://doc.dpdk.org/guides/linux_gsg/linux_eal_parameters.html
     int32_t return_val = rte_eal_init(argc, argv);
@@ -71,6 +143,24 @@ int main(int argc, char **argv)
     // is (9 - 4 = 5). Setting `argv` to point to the start of user argument which is `--`
     argc -= return_val;
     argv += return_val;
+
+    // Detecting the logical cores (CPUs) ids passed to this DPDK application. 
+    uint16_t i = 0;
+    std::vector<uint16_t> logicalCores;
+    std::cout << "Logical cores ids (CPU ids): ";
+    RTE_LCORE_FOREACH(i) {
+        logicalCores.push_back(i);
+        std::cout << i << " ";
+    }
+    std::cout << std::endl;
+
+    // We must have atleast two logical cores passed as an argument to this DPDK application. The first logical core will run the main function where 
+    // we will run our packet reading loop. The second logical core will run our packet processing thread.
+    if (logicalCores.size() < 2) 
+    {
+        std::cerr << "Atleast two logical cores are required to run this DPDK application. " << std::endl;
+        exit(1);
+    }
 
     uint16_t port_ids[RTE_MAX_ETHPORTS] = {0};
     int16_t id = 0;
@@ -102,9 +192,9 @@ int main(int argc, char **argv)
     rte_mempool *memory_pool = rte_pktmbuf_pool_create("mempool_1", 1023, 512, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 
     // Configuring the port (ethernet interface). An ethernet interface can have multiple receive queues and transmit queues. 
-    // Currently we are setting up one transmit queue and no receive queue as we are not receiving packets in this tutorial.
-    const uint16_t rx_queues = 0;
-    const uint16_t tx_queues = 1;
+    // Currently we are setting up only one receive queue and no transmit queue as we are not sending packets in this tutorial.
+    const uint16_t rx_queues = 1;
+    const uint16_t tx_queues = 0;
 
     rte_eth_conf portConf = {
         .rxmode = {
@@ -125,7 +215,7 @@ int main(int argc, char **argv)
     const int16_t portSocketId = rte_eth_dev_socket_id(port_ids[0]);
     const int16_t coreSocketId = rte_socket_id();
 
-    // Configure the Rx queue(s) of the port.
+    // Configure the queue(s) of the port.
     for (uint16_t i = 0; i < rx_queues; i++) {
         return_val = rte_eth_rx_queue_setup(port_ids[0], i, 256, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pool);
         
@@ -139,20 +229,6 @@ int main(int argc, char **argv)
                   << ((portSocketId >= 0) ? portSocketId : coreSocketId) << std::endl;
     }
 
-    // Configure the Tx queue(s) of the port.
-    for (uint16_t i = 0; i < tx_queues; i++) {
-        return_val = rte_eth_tx_queue_setup(port_ids[0], i, 256, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr);
-        
-        if (return_val < 0) {
-            std::cerr << "Unable to setup TX queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
-            rte_eal_cleanup();
-            exit(1);
-        }
-
-        std::cout << "Port Id: " << port_ids[0] << " Tx Queue: " << i << " setup successful. Socket id: "   
-                  << ((portSocketId >= 0) ? portSocketId : coreSocketId) << std::endl;
-    }
-
     // Enable promiscuous mode on the port. Not all the DPDK drivers provide the functionality to enable promiscuous mode. So we are going to 
     // ignore the result if the API fails.
     return_val = rte_eth_promiscuous_enable(port_ids[0]);
@@ -160,99 +236,47 @@ int main(int argc, char **argv)
         std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << port_ids[0] << " Return code: " << return_val << " Ignoring ... " << std::endl;
     }
 
-    // All the configuration is done. Finally starting the port (ethernet interface) so that we can start transmitting the packets.
+    // All the configuration is done. Finally starting the port (ethernet interface) so that we can start receiving the packets.
     return_val = rte_eth_dev_start(port_ids[0]);
-    if (return_val < 0) {
+    if (return_val < 0) 
+    {
         std::cout << "Unable to start port Id: " << port_ids[0] << " Return code: " << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
     std::cout << "Port configuration successful. Port Id: " << port_ids[0] << std::endl;
-
-    std::cout << "Starting packet tranmission on the ethernet port ... " << std::endl;
-
-    uint64_t transmitted_packet_count = 0;
-
-    // Now we go into a loop to continously transmit the packets on the port (ethernet interface).
-    while (!exit_indicator) {
-
-        // Get a memory buffer from our memory pool. On this memory buffer we will write our packet data.
-        rte_mbuf *packet = nullptr;
-        if (rte_mempool_get(memory_pool, reinterpret_cast<void **>(&packet)) != 0) {
-            std::cout << "Error: Unable to get memory buffer from memory pool. " << std::endl;
-            using namespace std::literals;
-            std::this_thread::sleep_for(100ms);
-            continue;
-        }
-
-        // We have successfully got the memory buffer. Now we will write the packet data. A memory buffer in DPDK is divided 
-        // into parts i.e. Head room memory area, main memory area and tail room memory area. The details are available at:
-        // https://doc.dpdk.org/guides/prog_guide/mbuf_lib.html
-        // We will get a pointer to the main memory area of our memory buffer and write packet info.
-        uint8_t *data = rte_pktmbuf_mtod(packet, uint8_t *);
-
-        // Setting Ethernet header information (Source MAC, Destination MAC, Ethernet type).
-        rte_ether_hdr *const eth_hdr = reinterpret_cast<rte_ether_hdr *>(data);
-        eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
-
-        const uint8_t src_mac_addr[6] = {0x08, 0x00, 0x27, 0x95, 0xBD, 0xAE};
-        memcpy(eth_hdr->src_addr.addr_bytes, src_mac_addr, sizeof(src_mac_addr));
-
-        const uint8_t dst_mac_addr[6] = {0x08, 0x00, 0x27, 0x35, 0x14, 0x15};
-        memcpy(eth_hdr->dst_addr.addr_bytes, dst_mac_addr, sizeof(dst_mac_addr));
-
-        // Setting IPv4 header information.
-        rte_ipv4_hdr *const ipv4_hdr = reinterpret_cast<rte_ipv4_hdr *>(data + sizeof(rte_ether_hdr));
-        ipv4_hdr->version = 4;              // Setting IP version as IPv4
-        ipv4_hdr->ihl = 5;                  // Setting IP header length = 20 bytes = (5 * 4 Bytes)
-        ipv4_hdr->type_of_service = 0;      // Setting DSCP = 0; ECN = 0;
-        ipv4_hdr->total_length = rte_cpu_to_be_16(200);       // Setting total IPv4 packet length to 200 bytes. This includes the IPv4 header (20 bytes) as well.
-        ipv4_hdr->packet_id = 0;            // Setting identification = 0 as the packet is non-fragmented.
-        ipv4_hdr->fragment_offset = 0x0040; // Setting packet as non-fragmented and fragment offset = 0.
-        ipv4_hdr->time_to_live = 64;        // Setting Time to live = 64;
-        ipv4_hdr->next_proto_id = 17;       // Setting the next protocol as UDP (17).
-
-        const uint8_t src_ip_addr[4] = {10, 0, 9, 8};
-        memcpy(&ipv4_hdr->src_addr, src_ip_addr, sizeof(src_ip_addr));      // Setting source ip address = 1.2.3.4
-
-        const uint8_t dest_ip_addr[4] = {10, 0, 9, 6};
-        memcpy(&ipv4_hdr->dst_addr, dest_ip_addr, sizeof(dest_ip_addr));    // Setting destination ip address = 4.3.2.1
-
-        ipv4_hdr->hdr_checksum = 0;
-        ipv4_hdr->hdr_checksum = rte_ipv4_cksum(ipv4_hdr);      // Calculating and setting IPv4 checksum in IPv4 header.
-
-        // Setting UDP header information.
-        rte_udp_hdr *const udp_hdr = reinterpret_cast<rte_udp_hdr *>(data + sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr));
-        udp_hdr->dst_port = rte_cpu_to_be_16(5000);     // Setting destination port = 5000;
-        udp_hdr->src_port = rte_cpu_to_be_16(10000);    // Setting source port = 10000;
-        udp_hdr->dgram_len = rte_cpu_to_be_16(180);     // Setting datagram length = 180;
-        udp_hdr->dgram_cksum = 0;                       // Setting checksum = 0;
-
-        // Setting data in the UDP payload
-        uint8_t *payload = data + sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) + sizeof(rte_udp_hdr);
-        memset(payload, 0, 172);
-        const char sample_data[] = {"This is a sample data generated by a DPDK application ..."};
-        memcpy(payload, sample_data, sizeof(sample_data));
-
-        // Setting the total packet size in our memory buffer.
-        // Total packet size = Ethernet header size + IPv4 header size + UDP header size + Payload size.
-        packet->data_len = packet->pkt_len = sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) + sizeof(rte_udp_hdr) + 172;
-
-        // Now our packet is finally prepared. We will now send it using the DPDK API.
-        // The DPDK API `rte_eth_tx_burst` will automatically release the memory buffer after tranmission is successful.
-        const uint16_t tx_packets = rte_eth_tx_burst(port_ids[0], 0, &packet, 1);
-        if (tx_packets == 0) {
-            std::cout << "Unable to transmit the packet. " << std::endl;
-            rte_pktmbuf_free(packet);   // As the packet is not transmitted, we need to free the memory buffer by our self.
-        } else {
-            transmitted_packet_count += tx_packets;
-            std::cout << "Packet transmitted successfully ... (" << transmitted_packet_count << ")" << std::endl;
-        }
-
-        using namespace std::literals;
-        std::this_thread::sleep_for(200ms);
+    
+    // Now creating a ring buffer. This ring buffer is used to transfer the packets from packet reading thread to packet processing thread.
+    // A ring buffer which contains a finite amount of spaces to place a memory buffer (packet) in each space.
+    // Our ring buffer has the following properties.
+    // - The name of ring buffer is "ring_buffer_1". Every ring buffer has a unique name in the memory to lookup for it later.
+    // - It has a size of 1024. Which means we can place (1024 - 1) packets in it until the buffer is filled.
+    // - It is created in the memory of the NUMA (socket) of current logical core (CPU) to improve performance. rte_socket_id() function 
+    //   returns the socket id of current logical core.
+    // - It is a single producer single consumer ring buffer which means that only thread is writing packets in this buffer and only one thread
+    //   is reading packets from this buffer.
+    ring_buffer = rte_ring_create("ring_buffer_1", 1024, rte_socket_id(), (RING_F_SP_ENQ | RING_F_SC_DEQ));
+    if (ring_buffer == nullptr) 
+    {
+        std::cerr << "Unable to create ring buffer. RTE errno:  " << rte_strerror(rte_errno);
+        rte_eal_cleanup();
+        exit(1);
     }
+
+    // Now initiating packet processing routine on the second logical core id.
+    if ((return_val = rte_eal_remote_launch(process_packets, nullptr, logicalCores[1])) != 0) 
+    {
+        std::cerr << "Unable to launch packet processing routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
+        rte_eal_cleanup();
+        exit(1);
+    }
+
+    // Now initiating packet reading routine on the first logical core id. The first logical core id will always by used by main function of the DPDK application.
+    read_packets_from_interface(reinterpret_cast<void *>(&(port_ids[0])));
+
+    // Now we will wait for the packet processing routine to finish before we exit our DPDK application application.
+    rte_eal_wait_lcore(logicalCores[1]);
 
     std::cout << "Exiting DPDK program ... " << std::endl;
     rte_eal_cleanup();
