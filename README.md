@@ -7,7 +7,9 @@ This repository contains DPDK tutorials.
 
 `3-processing-a-packet` : This tutorial explains simple steps for beginners to receive a packet from NIC and share this packet to the processing thread via ring buffer to process it. To execute: `sudo ./processing-a-packet --lcores=0-1 -n 4 --`
 
-`4-getting-nic-statistics` : This tutorial explains simple steps for beginners to receive a packet from NIC and share this packet to the processing thread via ring buffer to process it. To execute: `sudo ./getting-nic-statistics --lcores=0 -n 4 --`
+`4-getting-nic-statistics` : This tutorial explains simple steps for beginners to get the statistics from NIC. To execute: `sudo ./getting-nic-statistics --lcores=0 -n 4 --`
+
+`5-ipv4-checksum-calculation-offloading-to-nic` : This tutorial explains how to offload Ipv4 checksum calculation to NIC so that our application don't have to compute it. In this way we save computing resources. To execute: `sudo ./ipv4-checksum-calculation-offloading-to-nic --lcores=0 -n 4 --`
 
 To build the project: <br />
 `mkdir build` <br />
