@@ -11,6 +11,8 @@ This repository contains DPDK tutorials.
 
 `5-ipv4-checksum-calculation-offloading-to-nic` : This tutorial explains how to offload Ipv4 checksum calculation to NIC so that our application don't have to compute it. In this way we save computing resources. To execute: `sudo ./ipv4-checksum-calculation-offloading-to-nic --lcores=0 -n 4 --`
 
+`6-receive-side-scaling` : This tutorial explains how to make use of multiple receive queues of NIC (Network Interface Card) using RSS (Receive Side Scaling). To execute: `sudo ./receive-side-scaling --lcores=0-1 -n 4 --`
+
 To build the project: <br />
 `mkdir build` <br />
 `cd build` <br />
