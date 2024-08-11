@@ -15,6 +15,8 @@ This repository contains DPDK tutorials.
 
 `7-telemetry-in-dpdk` : This tutorial explains how to use telemetry in DPDK application. It implements a customized telemetry callback function to send specific info to DPDK telemetry client (dpdk-telemetry.py). To execute: `sudo ./telemetry-in-dpdk --lcores=0 -n 4 --`. After this, run the dpdk telemetry client `sudo /dpdk-23.11/usertools/dpdk-telemetry.py`. Once it is started, run the command `/dpdk_app/packet_info` to receive specific telemetry information from our DPDK application.
 
+`8-multiprocess-communication` : This tutorial explains how to DPDK applications can communicate with each other via shared memory ring buffers. This tutorial implements a DPDK application which can be executed as a primary or a secondary dpdk application.Primary DPDK process sends packets to secondary DPDK process via shared memory ring buffers. To execute primary DPDK process: `sudo ./multiprocess-communication --lcores=0@0 -n 4 --proc-type=primary -- ring_buffer_1`. To execute secondary DPDK process: `sudo ./multiprocess-communication --lcores=0@0 -n 4 --proc-type=secondary -- ring_buffer_1`
+
 To build the project: <br />
 `mkdir build` <br />
 `cd build` <br />

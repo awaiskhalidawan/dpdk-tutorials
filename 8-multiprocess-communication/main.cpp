@@ -25,6 +25,7 @@
 #include <csignal>
 #include <ctime>
 #include <vector>
+#include <cstring>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
@@ -32,7 +33,9 @@
 
 static volatile sig_atomic_t exit_indicator = 0;
 
-static rte_ring* ring_buffer = nullptr;
+static rte_ring *ring_buffer = {nullptr};
+
+static rte_mempool *memory_buffer_pool {nullptr};
 
 static uint64_t timestamp_dynfield_offset = 0;
 
@@ -49,6 +52,56 @@ std::string get_current_data_time()
     std::strftime(std::data(timeString), std::size(timeString),
                   "%FT%TZ", std::gmtime(&time));
     return timeString;
+}
+
+int generate_packets(void *params)
+{
+    uint8_t  tx_count = 0;
+    uint64_t total_tx_packets = 0;
+
+    // We will print the logical core id (CPU id) on which this thread is going to be executed. rte_lcore_id() function will
+    // return the current logical core id (CPU id). 
+    std::cout << "Starting packet generation routine. Logical core id (CPU id): " << rte_lcore_id() << std::endl;
+
+    // Now continuously generate the packets and enqueue it in the ring buffer.
+    while (!exit_indicator) {        
+        using namespace std::literals;
+        std::this_thread::sleep_for(10ms);
+        
+        // Allocate a new memory buffer (packet) from the memory buffer pool.
+        rte_mbuf *const packet = rte_pktmbuf_alloc(memory_buffer_pool);
+        if (!packet) {
+            std::cerr << "Unable to allocate memory buffer. " << std::endl;            
+            continue;
+        }
+
+        // Timestamp the memory buffer (packet). The timestamp will be written in the head room of the memory buffer. 
+        // Head room is the memory area before actual data room.
+        static timespec ts {0};
+        clock_gettime(CLOCK_REALTIME, &ts);
+        *(RTE_MBUF_DYNFIELD(packet, timestamp_dynfield_offset, uint64_t *)) = ((ts.tv_sec * 1000000000L) + ts.tv_nsec);
+
+        // Filling some data in the packet.
+        static const char data[] = "A quick brown fox jumps over the lazy dog."; 
+        uint8_t *const data_ptr = rte_pktmbuf_mtod(packet, uint8_t*);
+        std::memcpy(data_ptr, data, sizeof(data));
+        packet->data_len = sizeof(data);
+
+        // Enqueuing the packet in the ring buffer.
+        if (!rte_ring_enqueue(ring_buffer, packet)) {
+            total_tx_packets++;
+            if (!(total_tx_packets % 100)) {
+                std::cout << "Successfully enqueued packet(s) in the ring buffer. total packet: " << total_tx_packets << std::endl; 
+            }
+        } else {
+            std::cerr << "Unable to enqueue packet in the ring buffer. Space is full. " << std::endl;
+            rte_pktmbuf_free(packet);
+        }
+    }
+
+    std::cout << "Total packets generated: " << total_tx_packets << std::endl;    
+    std::cout << "Exiting packet generation routine. " << std::endl;
+    return 0;
 }
 
 int process_packets(void *params)
@@ -191,19 +244,62 @@ int main(int argc, char **argv)
         std::cout << "Timestamp dynamic field offset: " << timestamp_dynfield_offset << std::endl;
     }
 
-    // Lookup for the ring buffer created by a primary application.
-    ring_buffer = rte_ring_lookup(ring_buffer_name.c_str());
-    if (ring_buffer == nullptr) 
+    // Find the process type of current process. Whether its a primary or secondary.
+	const rte_proc_type_t proc_type = rte_eal_process_type();
+
+    if (proc_type == RTE_PROC_PRIMARY)
     {
-        std::cerr << "Unable to lookup for ring buffer: " << ring_buffer_name.c_str() << " RTE errno: " << rte_strerror(rte_errno);
-        rte_eal_cleanup();
-        exit(1);
+        // Primary process with create the memory buffer pool, create the ring buffer and generate packets.
+        // Create a new pool of memory buffers.
+        memory_buffer_pool = rte_pktmbuf_pool_create("memory_buffer_pool_1",     // Name of memory buffer pool.
+                                                     2048,                       // Size of memory buffer pool. (2048 - 1 = 2047)
+                                                     RTE_MEMPOOL_CACHE_MAX_SIZE, // Mempool cache size.
+                                                     0,                          // Size of private area of memory buffer.
+                                                     RTE_MBUF_DEFAULT_BUF_SIZE,  // Size of memory buffer.
+                                                     rte_socket_id());           // Socket on which memory buffer is created.
+
+        if (!memory_buffer_pool) {
+            std::cerr << "Unable to create a new memory buffer pool. rte errno: " << rte_strerror(rte_errno);
+            rte_eal_cleanup();
+            exit(1);
+        }
+
+        // Lookup for the ring buffer created by a primary application.
+        ring_buffer = rte_ring_create(ring_buffer_name.c_str(),         // Name of ring buffer.
+                                      512,                              // Max size of ring buffer. (512 - 1 = 511 elements)
+                                      rte_socket_id(),                  // Socket on which ring buffer will be created.
+                                      (RING_F_SP_ENQ | RING_F_SC_DEQ)); // Ring buffer type is Single producer / Single consumer.
+
+        if (!ring_buffer) {
+            std::cerr << "Unable to create ring buffer: " << ring_buffer_name.c_str() << " RTE errno: " << rte_strerror(rte_errno);
+            rte_eal_cleanup();
+            exit(1);
+        }
+
+        std::cout << "Ring buffer creation successful against name: " << ring_buffer_name.c_str() << std::endl;
+        // Start packet generation routine.
+        generate_packets(nullptr);
+        using namespace std::literals;
+        std::this_thread::sleep_for(500ms);
+        rte_ring_free(ring_buffer);
+    } else if (proc_type == RTE_PROC_SECONDARY) {
+        // Primary process with look up for the ring buffer and receive the packets generated by primary DPDK application.
+        // Lookup for the ring buffer created by a primary application.
+        ring_buffer = rte_ring_lookup(ring_buffer_name.c_str());
+        if (ring_buffer == nullptr)
+        {
+            std::cerr << "Unable to lookup for ring buffer: " << ring_buffer_name.c_str() << " RTE errno: " << rte_strerror(rte_errno);
+            rte_eal_cleanup();
+            exit(1);
+        }
+
+        std::cout << "Ring buffer lookup successful against name: " << ring_buffer_name.c_str() << std::endl;
+
+        // Start receiving and processing the packets.
+        process_packets(nullptr);
     }
 
-    std::cout << "Ring buffer lookup successful against name: " << ring_buffer_name.c_str() << std::endl;
-    process_packets(nullptr);
-
-    std::cout << "Exiting DPDK program ... " << std::endl;
+    std::cout << "Exiting DPDK program ... " << std::endl;    
     rte_eal_cleanup();
     return 0;
 }
