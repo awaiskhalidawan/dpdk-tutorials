@@ -137,7 +137,7 @@ int process_packets(void *params)
             const uint64_t timestamp = *(RTE_MBUF_DYNFIELD(packet, timestamp_dynfield_offset, uint64_t *));
 
             if (!(total_rx_packets % 100)) {
-                printf("Total packets received: %llu \n", total_rx_packets);
+                printf("Total packets received: %lu \n", total_rx_packets);
                 uint8_t *data = rte_pktmbuf_mtod(packet, uint8_t*);
                 printf("packet data: %s \n", data); 
             }
