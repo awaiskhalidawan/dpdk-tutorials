@@ -291,7 +291,7 @@ int get_and_print_nic_statistics(const uint16_t port_id)
 
         if (diff.count() >= NIC_STATISTICS_INTERVAL_MSEC) {
             t1 = t2;
-            //std::cout << "\033[2J\033[1;1H";
+            std::cout << "\033[2J\033[1;1H";
             if ((return_val = rte_eth_stats_get(port_id, &stats) == 0)) {
                 auto now = std::chrono::system_clock::now();
                 auto in_time_t = std::chrono::system_clock::to_time_t(now);
