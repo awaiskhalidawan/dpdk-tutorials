@@ -31,9 +31,9 @@
 #include <atomic>
 #include <iomanip>
 
-constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC = 1000;         // 1 seconds.
-static const std::string MEMORY_POOL_NAME = "mempool_1";        // Name of the memory pool.
-constexpr uint32_t MEMORY_POOL_SIZE = 65535;                    // Size of the memory pool.
+constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC = 1000;              // 1 seconds.
+static const std::string MEMORY_POOL_NAME_PREFIX = "mempool_";       // Prefix name of the memory pool.
+constexpr uint32_t MEMORY_POOL_SIZE = 65535;                         // Size of the memory pool.
 
 static std::atomic<bool> exit_indicator = false;
 
@@ -46,6 +46,7 @@ int read_packets_from_interface(void *param)
 {
     const uint16_t port_id = (*(reinterpret_cast<uint32_t *>(param))) & 0xFFFF;
     const uint16_t queue_id = ((*(reinterpret_cast<uint32_t *>(param))) >> 16) & 0xFFFF;
+    constexpr uint32_t RX_BURST_SIZE = 32;
 
     printf("Starting packet reading routine. Port Id: %u  Queue Id: %u  Logical core id (CPU Id): %d \n", port_id, queue_id, rte_lcore_id());
     rte_mbuf *rx_packets[32] = {nullptr};
@@ -54,7 +55,7 @@ int read_packets_from_interface(void *param)
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
     while (!exit_indicator.load(std::memory_order_relaxed)) {
         // Read the packets from interface. We read 32 packets at max at time.
-        rx_count = rte_eth_rx_burst(port_id, queue_id, rx_packets, 32);
+        rx_count = rte_eth_rx_burst(port_id, queue_id, rx_packets, RX_BURST_SIZE);
 
         if (rx_count == 0) {
             // No packets found. Check again.
@@ -68,6 +69,7 @@ int read_packets_from_interface(void *param)
     }
     
     std::cout << "Exiting packet reading routine. " << std::endl;
+    delete reinterpret_cast<uint32_t *>(param);
     return 0;
 }
 
@@ -217,16 +219,23 @@ int main(int argc, char **argv)
 
     std::cout << "Total ports detected: " << total_port_count << std::endl;
 
-    // Creating memory pool which contains the memory buffers. A memory buffer is the buffer where DPDK driver will write an 
-    // incoming packet. Below memory pool has name "mempool_1" and has 1023 available memory buffer. A single memory buffer 
-    // has a size of RTE_MBUF_DEFAULT_BUF_SIZE (2048Bytes + 128Bytes).
-    rte_mempool *memory_pool = rte_pktmbuf_pool_create("mempool_1", 1023, 512, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-
-    // Configuring the port (ethernet interface). An ethernet interface can have multiple receive queues and transmit queues. 
-    // Currently we are setting up two receive queues and no transmit queue as we are not sending packets in this tutorial.
     const uint16_t rx_queues = 1;
     const uint16_t tx_queues = 0;
 
+    // Creating memory pool against each receive queue.    
+    rte_mempool **memory_pools = new rte_mempool* [rx_queues];
+    for (uint16_t i = 0; i < rx_queues; ++i) {
+        const std::string mempool_name = MEMORY_POOL_NAME_PREFIX + std::to_string(i);
+        memory_pools[i] = rte_pktmbuf_pool_create(mempool_name.c_str(), MEMORY_POOL_SIZE, 512, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+        if (!memory_pools[i]) {
+            std::cerr << "Unable to initialize memory pool: " << mempool_name << std::endl;
+            rte_eal_cleanup();
+            exit(1);
+        }
+    }
+
+    // Configuring the port (ethernet interface). An ethernet interface can have multiple receive queues and transmit queues. 
+    // Currently we are setting up two receive queues and no transmit queue as we are not sending packets in this tutorial.
     rte_eth_conf portConf = {
         .rxmode = {
             .mq_mode = RTE_ETH_MQ_RX_NONE
@@ -274,7 +283,7 @@ int main(int argc, char **argv)
 
     // Configure the queue(s) of the port.
     for (uint16_t i = 0; i < rx_queues; i++) {
-        return_val = rte_eth_rx_queue_setup(port_ids[0], i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pool);
+        return_val = rte_eth_rx_queue_setup(port_ids[0], i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pools[i]);
         
         if (return_val < 0) {
             std::cerr << "Unable to setup Rx queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
@@ -282,8 +291,8 @@ int main(int argc, char **argv)
             exit(1);
         }
 
-        std::cout << "Port Id: " << port_ids[0] << " Rx Queue: " << i << " setup successful. Socket id: "   
-                  << ((portSocketId >= 0) ? portSocketId : coreSocketId) << std::endl;
+        std::cout << "Port Id: " << port_ids[0] << " Rx Queue: " << i << " setup successful. Port Socket Id: "   
+                  << portSocketId << " Core Socket Id: " << coreSocketId << std::endl;
     }
 
     // Enable promiscuous mode on the port. Not all the DPDK drivers provide the functionality to enable promiscuous mode. So we are going to 
@@ -304,23 +313,41 @@ int main(int argc, char **argv)
 
     std::cout << "Port configuration successful. Port Id: " << port_ids[0] << std::endl;
 
-    uint32_t port_and_queue_id = (1 << 16) | 0;   // Port Id: 0, Queue Id: 1 packed in uint32_t
-    // Now initiating packet processing routine on the second logical core id.
-    if ((return_val = rte_eal_remote_launch(read_packets_from_interface, reinterpret_cast<void *>(&port_and_queue_id), logicalCores[1])) != 0) 
-    {
-        std::cerr << "Unable to launch packet processing routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
-        rte_eal_cleanup();
-        exit(1);
+
+    for (uint16_t i = 0; i < rx_queues; ++i) {
+        uint32_t *port_and_queue_id = new uint32_t;
+        (*port_and_queue_id) = (i << 16) | port_ids[0];   // Port Id: 0, Queue Id: 0 packed in uint32_t
+        
+        // Now initiating packet processing routine on the second logical core id.
+        if ((return_val = rte_eal_remote_launch(read_packets_from_interface, reinterpret_cast<void *>(port_and_queue_id), logicalCores[1])) != 0) 
+        {
+            std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
+            rte_eth_dev_stop(port_ids[0]);
+            rte_eth_dev_close(port_ids[0]);
+            rte_eal_cleanup();
+            exit(1);
+        }
     }
 
-    port_and_queue_id = (0 << 16) | 0;   // Port Id: 0, Queue Id: 0 packed in uint32_t.
-    // Now initiating packet reading routine on the first logical core id. The first logical core id will always by used by main function of the DPDK application.
-    read_packets_from_interface(reinterpret_cast<void *>(&port_and_queue_id));
 
-    // Now we will wait for the packet processing routine to finish before we exit our DPDK application.
-    rte_eal_wait_lcore(logicalCores[1]);
+    // Logical core 0 will get and print nic statistics.
+    get_and_print_nic_statistics(port_ids[0]);  
+
+    // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit our DPDK application.
+    for (uint16_t i = 1; i < logicalCores.size(); ++i) {
+        rte_eal_wait_lcore(logicalCores[i]);
+    }
 
     std::cout << "Exiting DPDK program ... " << std::endl;
+
+    for (uint16_t i = 0; i < rx_queues; ++i) {
+        rte_mempool_free(memory_pools[i]);
+        memory_pools[i] = nullptr;
+    }
+    delete[] memory_pools;
+
+    rte_eth_dev_stop(port_ids[0]);
+    rte_eth_dev_close(port_ids[0]);
     rte_eal_cleanup();
     return 0;
 }
