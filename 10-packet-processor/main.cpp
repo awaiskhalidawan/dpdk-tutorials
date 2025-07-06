@@ -44,8 +44,8 @@ void terminate(int signal)
 
 int read_packets_from_interface(void *param)
 {
-    const uint16_t port_id = (*(reinterpret_cast<uint32_t *>(param))) & 0xFFFF;
-    const uint16_t queue_id = ((*(reinterpret_cast<uint32_t *>(param))) >> 16) & 0xFFFF;
+    const uint16_t port_id = ((*(reinterpret_cast<uint32_t *>(param))) >> 16) & 0xFFFF;
+    const uint16_t queue_id = (*(reinterpret_cast<uint32_t *>(param))) & 0xFFFF;
     constexpr uint32_t RX_BURST_SIZE = 32;
 
     printf("Starting packet reading routine. Port Id: %u  Queue Id: %u  Logical core id (CPU Id): %d \n", port_id, queue_id, rte_lcore_id());
@@ -62,7 +62,7 @@ int read_packets_from_interface(void *param)
             continue;
         }
 
-        printf("Packet(s) received: %u          Port Id: %u   Queue Id: %u \n", rx_count, port_id, queue_id);
+        //printf("Packet(s) received: %u          Port Id: %u   Queue Id: %u \n", rx_count, port_id, queue_id);
 
         // Free up the packets in bulk.
         rte_pktmbuf_free_bulk(rx_packets, rx_count);
@@ -188,7 +188,7 @@ int main(int argc, char **argv)
 
     // We must have atleast two logical cores passed as an argument to this DPDK application. The first logical core will run the main function where 
     // we will run our packet reading loop. The second logical core will run our packet processing thread.
-    if (logicalCores.size() != 2) 
+    if (logicalCores.size() < 2) 
     {
         std::cerr << "Atleast two logical cores are required to run this DPDK application. " << std::endl;
         rte_eal_cleanup();
@@ -218,6 +218,12 @@ int main(int argc, char **argv)
     }
 
     std::cout << "Total ports detected: " << total_port_count << std::endl;
+
+    const std::string target_port = "0000:04:00.1";
+    uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
+    if (rte_eth_dev_get_port_by_name(target_port.c_str(), &target_port_id)) {
+        std::cerr << "Unable to get port id against port: " << target_port << std::endl;
+    }
 
     const uint16_t rx_queues = 1;
     const uint16_t tx_queues = 0;
@@ -258,72 +264,72 @@ int main(int argc, char **argv)
     // We will fetch the device info to check how many receive queues are supported by our NIC. Atlease two queues are required
     // to test RSS (Receive Side Scaling).
     rte_eth_dev_info devInfo;
-    return_val = rte_eth_dev_info_get(port_ids[0], &devInfo);
+    return_val = rte_eth_dev_info_get(target_port_id, &devInfo);
     if (return_val != 0) {
-        printf("Error occurred while getting device info (port %u). Return code: %d", port_ids[0], return_val);
+        printf("Error occurred while getting device info (port %u). Return code: %d", target_port_id, return_val);
         rte_eal_cleanup();
         exit(1);
     }
 
     /*if (devInfo.max_rx_queues <= 1) {
-        printf("Total Rx queues: %u found. Port Id: %u. Atleast two Rx queues are required to test RSS (Receive Side Scaling) in this tutorial. \n", devInfo.nb_rx_queues, port_ids[0]);
+        printf("Total Rx queues: %u found. Port Id: %u. Atleast two Rx queues are required to test RSS (Receive Side Scaling) in this tutorial. \n", devInfo.nb_rx_queues, target_pord_id);
         rte_eal_cleanup();
         exit(1);
     }*/
 
     // Configure the port (ethernet interface).
-    if ((return_val = rte_eth_dev_configure(port_ids[0], rx_queues, tx_queues, &portConf)) != 0) {
-        std::cerr << "Unable to configure port. port Id: " << port_ids[0] << " Return code: "  << return_val << std::endl;
+    if ((return_val = rte_eth_dev_configure(target_port_id, rx_queues, tx_queues, &portConf)) != 0) {
+        std::cerr << "Unable to configure port. port Id: " << target_port_id << " Return code: "  << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    const int16_t portSocketId = rte_eth_dev_socket_id(port_ids[0]);
+    const int16_t portSocketId = rte_eth_dev_socket_id(target_port_id);
     const int16_t coreSocketId = rte_socket_id();
 
     // Configure the queue(s) of the port.
     for (uint16_t i = 0; i < rx_queues; i++) {
-        return_val = rte_eth_rx_queue_setup(port_ids[0], i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pools[i]);
+        return_val = rte_eth_rx_queue_setup(target_port_id, i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pools[i]);
         
         if (return_val < 0) {
-            std::cerr << "Unable to setup Rx queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
+            std::cerr << "Unable to setup Rx queue " << i << " Port Id: " << target_port_id << "Return code: " << return_val << std::endl;
             rte_eal_cleanup();
             exit(1);
         }
 
-        std::cout << "Port Id: " << port_ids[0] << " Rx Queue: " << i << " setup successful. Port Socket Id: "   
+        std::cout << "Port Id: " << target_port_id << " Rx Queue: " << i << " setup successful. Port Socket Id: "   
                   << portSocketId << " Core Socket Id: " << coreSocketId << std::endl;
     }
 
     // Enable promiscuous mode on the port. Not all the DPDK drivers provide the functionality to enable promiscuous mode. So we are going to 
     // ignore the result if the API fails.
-    return_val = rte_eth_promiscuous_enable(port_ids[0]);
+    return_val = rte_eth_promiscuous_enable(target_port_id);
     if (return_val < 0) {
-        std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << port_ids[0] << " Return code: " << return_val << " Ignoring ... " << std::endl;
+        std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << target_port_id << " Return code: " << return_val << " Ignoring ... " << std::endl;
     }
 
     // All the configuration is done. Finally starting the port (ethernet interface) so that we can start receiving the packets.
-    return_val = rte_eth_dev_start(port_ids[0]);
+    return_val = rte_eth_dev_start(target_port_id);
     if (return_val < 0) 
     {
-        std::cout << "Unable to start port Id: " << port_ids[0] << " Return code: " << return_val << std::endl;
+        std::cout << "Unable to start port Id: " << target_port_id << " Return code: " << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    std::cout << "Port configuration successful. Port Id: " << port_ids[0] << std::endl;
+    std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
 
 
     for (uint16_t i = 0; i < rx_queues; ++i) {
         uint32_t *port_and_queue_id = new uint32_t;
-        (*port_and_queue_id) = (i << 16) | port_ids[0];   // Port Id: 0, Queue Id: 0 packed in uint32_t
+        (*port_and_queue_id) = (target_port_id << 16) | i;   // Port Id: 0, Queue Id: 0 packed in uint32_t
         
         // Now initiating packet processing routine on the second logical core id.
         if ((return_val = rte_eal_remote_launch(read_packets_from_interface, reinterpret_cast<void *>(port_and_queue_id), logicalCores[1])) != 0) 
         {
             std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
-            rte_eth_dev_stop(port_ids[0]);
-            rte_eth_dev_close(port_ids[0]);
+            rte_eth_dev_stop(target_port_id);
+            rte_eth_dev_close(target_port_id);
             rte_eal_cleanup();
             exit(1);
         }
@@ -331,7 +337,7 @@ int main(int argc, char **argv)
 
 
     // Logical core 0 will get and print nic statistics.
-    get_and_print_nic_statistics(port_ids[0]);  
+    get_and_print_nic_statistics(target_port_id);  
 
     // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit our DPDK application.
     for (uint16_t i = 1; i < logicalCores.size(); ++i) {
@@ -346,8 +352,8 @@ int main(int argc, char **argv)
     }
     delete[] memory_pools;
 
-    rte_eth_dev_stop(port_ids[0]);
-    rte_eth_dev_close(port_ids[0]);
+    rte_eth_dev_stop(target_port_id);
+    rte_eth_dev_close(target_port_id);
     rte_eal_cleanup();
     return 0;
 }

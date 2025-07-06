@@ -69,10 +69,22 @@ fi
 echo "Done. "
 echo ""
 
-echo "Binding ethernet device(s) [0000:04:00.0] to DPDK driver ..."
-sudo ./dpdk-devbind.py -b vfio-pci 0000:04:00.0 --force
-if [ $? != 0 ]; then
-        echo "Unable to bind ethernet device to DPDK driver. Exiting ..."
-        exit 4
-fi
-echo "Done."
+
+bind_device_to_dpdk_driver () {
+	if [ $# != 1 ]; then
+                echo "Invalid number of arguments passed to bind_device function. ";
+                return 4;
+        fi
+	
+	echo "Binding ethernet device(s) "$1" to DPDK driver ..."
+	sudo ./dpdk-devbind.py -b vfio-pci "$1" --force
+	if [ $? != 0 ]; then
+        	echo "Unable to bind ethernet device "$1" to DPDK driver. Exiting ..."
+        	exit 4
+	fi
+	echo "Done."
+}
+
+bind_device_to_dpdk_driver "0000:04:00.0"
+bind_device_to_dpdk_driver "0000:04:00.1"
+

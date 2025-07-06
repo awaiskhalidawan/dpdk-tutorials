@@ -349,7 +349,6 @@ int transmit_packets_from_interface(void* param)
         return -1;
     }
 
-
     const uint16_t port_id = (*static_cast<uint32_t *>(param)) >> 16;
     const uint16_t queue_id = (*static_cast<uint32_t *>(param)) & 0xFFFF;
     std::cout << "Starting packet transmission routine on logical core: " << rte_lcore_id() << " Port id: " << port_id << " Queue id: " << queue_id << std::endl;
@@ -474,11 +473,17 @@ int main(int argc, char **argv)
 
     std::cout << "Total ports detected: " << total_port_count << std::endl;
     
+    const std::string target_port = "0000:04:00.0";
+    uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
+    if (rte_eth_dev_get_port_by_name(target_port.c_str(), &target_port_id)) {
+        std::cerr << "Unable to get port id against port: " << target_port << std::endl;
+    }
+
     // Check about the RX/TX offloading support of current ethernet device.
     // A ethernet device from different vendors (Intel, Nvidia, Broadcom etc.) supports different Rx/Tx offloading capabilities.
     // So we first check which Rx/Tx offloading capabilities are supported by our ether device.
     rte_eth_dev_info devInfo;
-    if (!check_device_offloading_support(port_ids[0], devInfo)) {
+    if (!check_device_offloading_support(target_port_id, devInfo)) {
         rte_eal_cleanup();
         exit(1);
     }
@@ -523,81 +528,84 @@ int main(int argc, char **argv)
     };
 
     // Configure the port (ethernet interface).
-    if ((return_val = rte_eth_dev_configure(port_ids[0], rx_queues, tx_queues, &portConf)) != 0) {
-        std::cerr << "Unable to configure port. port Id: " << port_ids[0] << " Return code: "  << return_val << std::endl;
+    if ((return_val = rte_eth_dev_configure(target_port_id, rx_queues, tx_queues, &portConf)) != 0) {
+        std::cerr << "Unable to configure port. port Id: " << target_port_id << " Return code: "  << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    const int16_t portSocketId = rte_eth_dev_socket_id(port_ids[0]);
+    const int16_t portSocketId = rte_eth_dev_socket_id(target_port_id);
     const int16_t coreSocketId = rte_socket_id();
 
     // Configure the Rx queue(s) of the port.
     for (uint16_t i = 0; i < rx_queues; i++) {
-        return_val = rte_eth_rx_queue_setup(port_ids[0], i, 256, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pool);
+        return_val = rte_eth_rx_queue_setup(target_port_id, i, 256, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pool);
         
         if (return_val < 0) {
-            std::cerr << "Unable to setup RX queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
+            std::cerr << "Unable to setup RX queue " << i << " Port Id: " << target_port_id << "Return code: " << return_val << std::endl;
             rte_eal_cleanup();
             exit(1);
         }
 
-        std::cout << "Port Id: " << port_ids[0] << " Rx Queue: " << i << " setup successful. Socket id: "   
+        std::cout << "Port Id: " << target_port_id << " Rx Queue: " << i << " setup successful. Socket id: "   
                   << ((portSocketId >= 0) ? portSocketId : coreSocketId) << std::endl;
     }
 
     // Configure the Tx queue(s) of the port.
     for (uint16_t i = 0; i < tx_queues; i++) {
-        return_val = rte_eth_tx_queue_setup(port_ids[0], i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr);
+        return_val = rte_eth_tx_queue_setup(target_port_id, i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr);
         
         if (return_val < 0) {
-            std::cerr << "Unable to setup TX queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
+            std::cerr << "Unable to setup TX queue " << i << " Port Id: " << target_port_id << "Return code: " << return_val << std::endl;
             rte_eal_cleanup();
             exit(1);
         }
 
-        std::cout << "Port Id: " << port_ids[0] << " Tx Queue: " << i << " setup successful. Port socket id: " << portSocketId 
+        std::cout << "Port Id: " << target_port_id << " Tx Queue: " << i << " setup successful. Port socket id: " << portSocketId 
                   << " Core socket id: " << coreSocketId << std::endl;
     }
 
     // Enable promiscuous mode on the port. Not all the DPDK drivers provide the functionality to enable promiscuous mode. So we are going to 
     // ignore the result if the API fails.
-    return_val = rte_eth_promiscuous_enable(port_ids[0]);
+    return_val = rte_eth_promiscuous_enable(target_port_id);
     if (return_val < 0) {
-        std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << port_ids[0] << " Return code: " << return_val << " Ignoring ... " << std::endl;
+        std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << target_port_id << " Return code: " << return_val << " Ignoring ... " << std::endl;
     }
 
     // All the configuration is done. Finally starting the port (ethernet interface) so that we can start transmitting the packets.
-    return_val = rte_eth_dev_start(port_ids[0]);
+    return_val = rte_eth_dev_start(target_port_id);
     if (return_val < 0) {
-        std::cout << "Unable to start port Id: " << port_ids[0] << " Return code: " << return_val << std::endl;
+        std::cout << "Unable to start port Id: " << target_port_id << " Return code: " << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    std::cout << "Port configuration successful. Port Id: " << port_ids[0] << std::endl;
+    std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
 
     // Prepare memory pool.
     if (!prepare_memory_pool()) {
-        rte_eth_dev_stop(port_ids[0]);
-        rte_eth_dev_close(port_ids[0]);
+        rte_eth_dev_stop(target_port_id);
+        rte_eth_dev_close(target_port_id);
         rte_eal_cleanup();
         exit(1);
     }
 
     // Now initiating packet transmission routine on the second logical core id.    
-    uint32_t port_and_queue_id = (0 << 16) | 0;   // Port Id: 0, Queue Id: 0 packed in uint32_t.
+    uint32_t port_and_queue_id = (target_port_id << 16) | 0;   // Port Id: 0, Queue Id: 0 packed in uint32_t.
     if ((return_val = rte_eal_remote_launch(transmit_packets_from_interface, reinterpret_cast<void *>(&port_and_queue_id), logicalCores[1])) != 0) 
     {
         std::cerr << "Unable to launch packet transmission routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
-        rte_eth_dev_stop(port_ids[0]);
-        rte_eth_dev_close(port_ids[0]);
+        rte_eth_dev_stop(target_port_id);
+        rte_eth_dev_close(target_port_id);
         rte_eal_cleanup();
         exit(1);
     }
 
+    using namespace std::literals;
+    std::this_thread::sleep_for(1000ms);
+
     // Logical core 0 will get and print nic statistics.
-    get_and_print_nic_statistics(port_ids[0]);
+    get_and_print_nic_statistics(target_port_id);
 
     std::cout << "Exiting DPDK program ... " << std::endl;
     rte_eal_cleanup();
