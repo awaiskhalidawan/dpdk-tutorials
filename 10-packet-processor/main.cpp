@@ -30,6 +30,7 @@
 #include <rte_mbuf.h>
 #include <atomic>
 #include <iomanip>
+#include <packet_dumper.hpp>
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC = 1000;              // 1 seconds.
 static const std::string MEMORY_POOL_NAME_PREFIX = "mempool_";       // Prefix name of memory pool.
@@ -76,10 +77,21 @@ int process_packets(void *param)
         return -1;
     }
 
+    // Create a packet dumper instance.
+    auto pkt_dumper = std::make_unique<packet_dumper>("/tmp");
+
     rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
 
+    auto tp1 = std::chrono::high_resolution_clock::now();
+
     while (!exit_indicator.load(std::memory_order_relaxed)) {
+        auto tp2 = std::chrono::high_resolution_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(tp2 - tp1).count() >= PACKET_DUMP_FILE_FLUSH_TIMEOUT_MS) {
+            tp1 = tp2;
+            pkt_dumper->flush();
+        }
+
         // Read the packets from ring buffer in bursts.
         rx_count = rte_ring_dequeue_burst(ring_buffer, reinterpret_cast<void **>(rx_packets), RX_BURST_SIZE, nullptr);
         if (rx_count == 0) {
@@ -88,6 +100,9 @@ int process_packets(void *param)
         }
 
         // Write the packets to PCAP file.
+        for (uint16_t i = 0; i < rx_count; ++i) {
+            pkt_dumper->dump(rx_packets[i]);
+        }
     }
     
     std::cout << "Exiting packet processing routine. " << std::endl;
@@ -123,7 +138,6 @@ int read_packets(void *param)
             return -1;
         }
     }
-
 
     rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
@@ -422,8 +436,6 @@ int main(int argc, char **argv)
 
     std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
 
-    uint16_t lcoreIdx = 1;
-
     //Creating ring buffers for transfer of packets b/w packet reading and processing threads.
     rte_ring ***ring_buffers = new rte_ring** [num_rx_queues];
     if (!ring_buffers) {
@@ -451,17 +463,35 @@ int main(int argc, char **argv)
         }
     }
 
+    uint16_t lcoreIdx = 1;    
     // Initiating the packet reading threads.
     for (uint16_t i = 0; i < num_rx_queues; ++i) {
-        auto params = new PacketReadingThreadParams;
-        params->port_id = target_port_id;
-        params->queue_id = i;
-        params->num_packet_processing_workers = num_packet_processing_workers;
+        auto packetReadingParams = new PacketReadingThreadParams;
+        packetReadingParams->port_id = target_port_id;
+        packetReadingParams->queue_id = i;
+        packetReadingParams->num_packet_processing_workers = num_packet_processing_workers;
 
-        if ((return_val = rte_eal_remote_launch(read_packets, reinterpret_cast<void *>(params), logicalCores[lcoreIdx++])) != 0) {
-            std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
+        if ((return_val = rte_eal_remote_launch(read_packets, reinterpret_cast<void *>(packetReadingParams), logicalCores[lcoreIdx])) != 0) {
+            std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
             cleanup(target_port_id);
             exit(1);
+        }
+
+        lcoreIdx++;
+
+        // Initiating the packet processing threads.
+        for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
+            auto packetProcParams = new PacketProcessingThreadParams;
+            packetProcParams->queue_id = i;
+            packetProcParams->worker_id = j;
+
+            if ((return_val = rte_eal_remote_launch(process_packets, reinterpret_cast<void *>(packetProcParams), logicalCores[lcoreIdx])) != 0) {
+                std::cerr << "Unable to launch packet processing routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
+                cleanup(target_port_id);
+                exit(1);
+            }
+
+            lcoreIdx++;
         }
     }
 

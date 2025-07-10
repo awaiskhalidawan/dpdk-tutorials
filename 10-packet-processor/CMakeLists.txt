@@ -12,6 +12,7 @@ target_compile_definitions(${TARGET_NAME} PRIVATE
 )
 
 target_link_libraries(${TARGET_NAME} PUBLIC
+  pcap
   -lrte_eal
   -lrte_ethdev
   -lrte_mempool
