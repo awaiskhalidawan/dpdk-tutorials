@@ -46,12 +46,56 @@ struct PacketReadingThreadParams {
     uint16_t num_packet_processing_workers {0};    
 };
 
+struct PacketProcessingThreadParams {
+    uint16_t queue_id {std::numeric_limits<decltype(queue_id)>::max()};
+    uint16_t worker_id {std::numeric_limits<decltype(worker_id)>::max()};
+};
+
 void terminate(int signal) 
 {
     exit_indicator.store(true, std::memory_order_relaxed);
 }
 
-int read_packets_from_interface(void *param)
+int process_packets(void *param) 
+{
+    if (!param) {
+        return -1;
+    }
+
+    PacketProcessingThreadParams *params = reinterpret_cast<PacketProcessingThreadParams *>(param);
+    const uint16_t queue_id = params->queue_id;
+    const uint16_t worker_id = params->worker_id;
+
+    printf("Starting packet processing routine. Queue Id: %u  Worker Id: %u  Logical core id (CPU Id): %d \n", queue_id, worker_id, rte_lcore_id());
+
+    const std::string ring_buffer_name = RING_BUFFER_NAME_PREFIX + std::to_string(queue_id) + "_" + std::to_string(worker_id);
+
+    rte_ring* ring_buffer = rte_ring_lookup(ring_buffer_name.c_str());
+    if (!ring_buffer) {
+        std::cerr << "Unable to look up ring buffer: " << ring_buffer_name << std::endl;
+        return -1;
+    }
+
+    rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
+    uint64_t rx_count = 0;
+
+    while (!exit_indicator.load(std::memory_order_relaxed)) {
+        // Read the packets from ring buffer in bursts.
+        rx_count = rte_ring_dequeue_burst(ring_buffer, reinterpret_cast<void **>(rx_packets), RX_BURST_SIZE, nullptr);
+        if (rx_count == 0) {
+            // No packets found. Check again.
+            continue;
+        }
+
+        // Write the packets to PCAP file.
+    }
+    
+    std::cout << "Exiting packet processing routine. " << std::endl;
+    delete reinterpret_cast<PacketProcessingThreadParams *>(param);
+    return 0;
+}
+
+int read_packets(void *param)
 {
     if (!param) {
         return -1;
@@ -81,13 +125,13 @@ int read_packets_from_interface(void *param)
     }
 
 
-    rte_mbuf *rx_packets[32] = {nullptr};
+    rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
     uint64_t ring_enqueue_count = 0;
 
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
     while (!exit_indicator.load(std::memory_order_relaxed)) {
-        // Read the packets from interface. We read 32 packets at max at time.
+        // Read the packets from interface in bursts.
         rx_count = rte_eth_rx_burst(port_id, queue_id, rx_packets, RX_BURST_SIZE);
 
         if (rx_count == 0) {
@@ -236,10 +280,23 @@ int main(int argc, char **argv)
     }
     std::cout << std::endl;
 
+    if (num_rx_queues == 0) {
+        std::cerr << "Atleast one Rx queues is required to run the application ..." << std::endl;
+        rte_eal_cleanup();
+        exit(1);
+    }
+
+    if (num_packet_processing_workers == 0) {
+        std::cerr << "Atleast one packet processing worker is required to run the application ..." << std::endl;
+        rte_eal_cleanup();
+        exit(1);
+    }
+
     // We need sufficient logical cores to run:
     // - main thread, packet receiving thread(s) and packet processing thread(s).
-    if (logicalCores.size() != (1 + num_rx_queues + num_packet_processing_workers)) {
-        std::cerr << "Insufficient count of logical cores are provided. Required logical cores count: " << (1 + num_rx_queues + num_packet_processing_workers) << std::endl;
+    const uint16_t num_required_logical_cores = 1 + num_rx_queues + (num_rx_queues * num_packet_processing_workers);
+    if (logicalCores.size() != num_required_logical_cores) {
+        std::cerr << "Insufficient count of logical cores are provided. Required logical cores count: " << num_required_logical_cores << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
@@ -401,7 +458,7 @@ int main(int argc, char **argv)
         params->queue_id = i;
         params->num_packet_processing_workers = num_packet_processing_workers;
 
-        if ((return_val = rte_eal_remote_launch(read_packets_from_interface, reinterpret_cast<void *>(params), logicalCores[lcoreIdx++])) != 0) {
+        if ((return_val = rte_eal_remote_launch(read_packets, reinterpret_cast<void *>(params), logicalCores[lcoreIdx++])) != 0) {
             std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
             cleanup(target_port_id);
             exit(1);
