@@ -44,13 +44,22 @@ static std::atomic<bool> exit_indicator = false;
 struct PacketReadingThreadParams {
     uint16_t port_id {std::numeric_limits<decltype(port_id)>::max()};
     uint16_t queue_id {std::numeric_limits<decltype(queue_id)>::max()};
-    uint16_t num_packet_processing_workers {0};    
+    uint16_t num_packet_processing_workers {0};
+    int32_t timestamp_dynfield_offset {-1};
 };
 
 struct PacketProcessingThreadParams {
     uint16_t queue_id {std::numeric_limits<decltype(queue_id)>::max()};
     uint16_t worker_id {std::numeric_limits<decltype(worker_id)>::max()};
+    int32_t timestamp_dynfield_offset {-1};
 };
+
+static const struct rte_mbuf_dynfield timestamp_dynfield_descriptor = {
+    .name = "dynfield_timestamp",
+    .size = sizeof(uint64_t),
+    .align = __alignof__(uint64_t),
+};
+
 
 void terminate(int signal) 
 {
@@ -66,6 +75,7 @@ int process_packets(void *param)
     PacketProcessingThreadParams *params = reinterpret_cast<PacketProcessingThreadParams *>(param);
     const uint16_t queue_id = params->queue_id;
     const uint16_t worker_id = params->worker_id;
+    const int32_t timestamp_dynfield_offset = params->timestamp_dynfield_offset;
 
     printf("Starting packet processing routine. Queue Id: %u  Worker Id: %u  Logical core id (CPU Id): %d \n", queue_id, worker_id, rte_lcore_id());
 
@@ -78,7 +88,7 @@ int process_packets(void *param)
     }
 
     // Create a packet dumper instance.
-    auto pkt_dumper = std::make_unique<packet_dumper>("/tmp");
+    auto pkt_dumper = std::make_unique<packet_dumper>("/tmp", 100, timestamp_dynfield_offset);
 
     rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
@@ -120,6 +130,7 @@ int read_packets(void *param)
     const uint16_t port_id = params->port_id;
     const uint16_t queue_id = params->queue_id;
     const uint16_t num_packet_processing_workers = params->num_packet_processing_workers;
+    const int32_t timestamp_dynfield_offset = params->timestamp_dynfield_offset;
 
     printf("Starting packet reading routine. Port Id: %u  Queue Id: %u  Logical core id (CPU Id): %d  Packet processing workers count: %u \n", 
             port_id, queue_id, rte_lcore_id(), num_packet_processing_workers);
@@ -142,6 +153,7 @@ int read_packets(void *param)
     rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
     uint64_t ring_enqueue_count = 0;
+    timespec ts {0};
 
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
     while (!exit_indicator.load(std::memory_order_relaxed)) {
@@ -151,6 +163,13 @@ int read_packets(void *param)
         if (rx_count == 0) {
             // No packets found. Check again.
             continue;
+        }
+
+        // Timestamp the packets.
+        clock_gettime(CLOCK_REALTIME, &ts);
+        const uint64_t timestamp = (ts.tv_sec * 1000000000) + ts.tv_nsec;
+        for (uint16_t i = 0; i < rx_count; ++i) {
+            *(RTE_MBUF_DYNFIELD(rx_packets[i], timestamp_dynfield_offset, uint64_t *)) = timestamp;
         }
 
         for (uint16_t i = 0; i < num_packet_processing_workers; ++i) {
@@ -339,6 +358,15 @@ int main(int argc, char **argv)
 
     std::cout << "Total ports detected: " << total_port_count << std::endl;
 
+    const int32_t timestamp_dynfield_offset = rte_mbuf_dynfield_register(&timestamp_dynfield_descriptor);
+    if (timestamp_dynfield_offset < 0) {
+        std::cerr << "Unable to register mbuf dynamic field for timestamp. " << std::endl;
+        rte_eal_cleanup();
+        exit(1);
+    }
+
+    std::cout << "Timestamp dynamic field registered. Offset: " << timestamp_dynfield_offset << std::endl;
+
     const std::string target_port = "0000:04:00.1";
     uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
     if (rte_eth_dev_get_port_by_name(target_port.c_str(), &target_port_id)) {
@@ -470,6 +498,7 @@ int main(int argc, char **argv)
         packetReadingParams->port_id = target_port_id;
         packetReadingParams->queue_id = i;
         packetReadingParams->num_packet_processing_workers = num_packet_processing_workers;
+        packetReadingParams->timestamp_dynfield_offset = timestamp_dynfield_offset;
 
         if ((return_val = rte_eal_remote_launch(read_packets, reinterpret_cast<void *>(packetReadingParams), logicalCores[lcoreIdx])) != 0) {
             std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
@@ -481,11 +510,12 @@ int main(int argc, char **argv)
 
         // Initiating the packet processing threads.
         for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
-            auto packetProcParams = new PacketProcessingThreadParams;
-            packetProcParams->queue_id = i;
-            packetProcParams->worker_id = j;
+            auto packetProcessingParams = new PacketProcessingThreadParams;
+            packetProcessingParams->queue_id = i;
+            packetProcessingParams->worker_id = j;
+            packetProcessingParams->timestamp_dynfield_offset = timestamp_dynfield_offset;
 
-            if ((return_val = rte_eal_remote_launch(process_packets, reinterpret_cast<void *>(packetProcParams), logicalCores[lcoreIdx])) != 0) {
+            if ((return_val = rte_eal_remote_launch(process_packets, reinterpret_cast<void *>(packetProcessingParams), logicalCores[lcoreIdx])) != 0) {
                 std::cerr << "Unable to launch packet processing routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
                 cleanup(target_port_id);
                 exit(1);

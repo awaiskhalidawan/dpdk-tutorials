@@ -14,7 +14,7 @@ private:
     pcap_dumper_t *dump_handler {nullptr};
     std::string dump_pcap_dir {"/tmp"};
     uint32_t max_packet_dump_file_size_mb {100};
-    int64_t packet_timestamp_dynfield_offset {-1};
+    int32_t packet_timestamp_dynfield_offset {-1};
 
     bool createPacketDumpFile();
 
@@ -24,14 +24,14 @@ public:
     packet_dumper(packet_dumper&&) = delete;
     packet_dumper& operator=(const packet_dumper&) = delete;
     packet_dumper& operator=(packet_dumper&&) = delete;
-    packet_dumper(const std::string& dump_pcap_directory, const uint32_t max_packet_dump_file_size_mb = 100, const int64_t packet_timestamp_dynfield_offset = -1);
+    packet_dumper(const std::string& dump_pcap_directory, const uint32_t max_packet_dump_file_size_mb = 100, const int32_t packet_timestamp_dynfield_offset = -1);
     ~packet_dumper();
 
     bool dump(rte_mbuf* packet);
     void flush();
 };
 
-packet_dumper::packet_dumper(const std::string& dump_pcap_directory, const uint32_t max_packet_dump_file_size_mb, const int64_t packet_timestamp_dynfield_offset)
+packet_dumper::packet_dumper(const std::string& dump_pcap_directory, const uint32_t max_packet_dump_file_size_mb, const int32_t packet_timestamp_dynfield_offset)
 {
     if (std::filesystem::exists(dump_pcap_directory) && std::filesystem::is_directory(dump_pcap_directory)) {
         this->dump_pcap_dir = dump_pcap_directory;
