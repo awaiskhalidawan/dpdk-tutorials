@@ -65,12 +65,14 @@ packet_dumper::~packet_dumper()
 
 bool packet_dumper::createPacketDumpFile()
 {
+    static uint64_t file_counter {0};
     const auto now = std::chrono::system_clock::now();
     std::time_t time_now = std::chrono::system_clock::to_time_t(now);
     std::tm local_time = *(std::localtime(&time_now));
     
     std::ostringstream file_name;
-    file_name << "dump" << "_" << std::this_thread::get_id() << "_" << std::put_time(&local_time, "%Y%m%d-%H%M%S") << ".cap";
+    file_name << "dump" << "_" << std::this_thread::get_id() << "_" << std::put_time(&local_time, "%Y%m%d-%H%M%S") 
+              << "_" << std::to_string(file_counter++) << ".cap";
 
     std::filesystem::path file_path = std::filesystem::path(dump_pcap_dir) / std::filesystem::path(file_name.str());
     dump_handler = pcap_dump_open(pcap_handler, file_path.string().c_str());

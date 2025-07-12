@@ -355,7 +355,7 @@ int transmit_packets_from_interface(void* param)
 
 
     const uint64_t packet_len = sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) + sizeof(rte_udp_hdr) + 172;
-    const uint64_t packets_per_second = 7000000;
+    const uint64_t packets_per_second = 3000000;
     const uint64_t packet_tx_burst_size = 16;
     const uint64_t interburst_time_ns = (1 * 1000000000) / (packets_per_second / packet_tx_burst_size);
 
@@ -606,6 +606,12 @@ int main(int argc, char **argv)
 
     // Logical core 0 will get and print nic statistics.
     get_and_print_nic_statistics(target_port_id);
+
+    // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit the application.
+    for (uint16_t i = 1; i < logicalCores.size(); ++i) {
+        std::cout << "Waiting for logical core " << logicalCores[i] << " to join. " << std::endl;
+        rte_eal_wait_lcore(logicalCores[i]);
+    }
 
     std::cout << "Exiting DPDK program ... " << std::endl;
     rte_eal_cleanup();

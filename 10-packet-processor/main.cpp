@@ -33,12 +33,13 @@
 #include <packet_dumper.hpp>
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
-constexpr uint32_t MEMORY_POOL_SIZE                   = 65535;       // Size of memory pool.
-constexpr uint32_t RING_BUFFER_SIZE                   = 2048;        // Size of ring buffer.
+constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
+constexpr uint32_t RING_BUFFER_SIZE                   = 65536;       // Size of ring buffer.
 constexpr uint32_t RX_BURST_SIZE                      = 32;          // Rx burst size.
 constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 4;           // Max packet processing worker count.
 constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS           = 1024;        // Number of descriptors configured for Rx queue.
 constexpr uint32_t MAX_ETH_RX_QUEUES                  = 4;           // Max number of Rx queues configured for ethernet port.
+constexpr uint32_t MAX_PCAP_DUMP_FILE_SIZE_MB         = 200;         // Maximum size of pcap dump file in MB.
 static const std::string MEMORY_POOL_NAME_PREFIX      = "mempool_";       // Prefix name of memory pool.
 static const std::string RING_BUFFER_NAME_PREFIX      = "ring_buffer_";   // Ring buffer name prefix.
 
@@ -106,7 +107,7 @@ int process_packets(void *param)
     }
 
     // Create a packet dumper instance.
-    auto pkt_dumper = std::make_unique<packet_dumper>("/tmp", 100, timestamp_dynfield_offset);
+    auto pkt_dumper = std::make_unique<packet_dumper>("/tmp", MAX_PCAP_DUMP_FILE_SIZE_MB, timestamp_dynfield_offset);
 
     rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
@@ -131,6 +132,8 @@ int process_packets(void *param)
         for (uint16_t i = 0; i < rx_count; ++i) {
             pkt_dumper->dump(rx_packets[i]);
         }
+
+        rte_pktmbuf_free_bulk(rx_packets, rx_count);
     }
     
     std::cout << "Exiting packet processing routine. " << std::endl;
