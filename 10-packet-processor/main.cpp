@@ -37,7 +37,8 @@ constexpr uint32_t MEMORY_POOL_SIZE                   = 65535;       // Size of 
 constexpr uint32_t RING_BUFFER_SIZE                   = 2048;        // Size of ring buffer.
 constexpr uint32_t RX_BURST_SIZE                      = 32;          // Rx burst size.
 constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 5;           // Max packet processing worker count.
-constexpr uint32_t MAX_ETH_RX_QUEUES = 8;                            // Max Rx queues configured for ethernet port.
+constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS               = 1024;    // Number of descriptors configured for Rx queue.
+constexpr uint32_t MAX_ETH_RX_QUEUES                  = 8;           // Max number of Rx queues configured for ethernet port.
 static const std::string MEMORY_POOL_NAME_PREFIX      = "mempool_";       // Prefix name of memory pool.
 static const std::string RING_BUFFER_NAME_PREFIX      = "ring_buffer_";   // Ring buffer name prefix.
 
@@ -73,6 +74,10 @@ struct PacketReadingThreadStatistics
 };
 
 static PacketReadingThreadStatistics packet_reading_thread_statistics[MAX_ETH_RX_QUEUES];
+
+static rte_mempool **memory_pools {nullptr};
+
+static rte_ring ***ring_buffers {nullptr}; 
 
 void terminate(int signal) 
 {
@@ -215,9 +220,14 @@ int read_packets(void *param)
     return 0;
 }
 
-int get_and_print_nic_statistics(const uint16_t port_id)
+int get_and_print_nic_statistics(void *param)
 {
+    if (!param) {
+        return -1;
+    }
+    
     int return_val = -1;
+    uint16_t port_id = *(reinterpret_cast<uint16_t *>(param));
     std::chrono::time_point<std::chrono::system_clock> t1 = std::chrono::system_clock::now();
     rte_eth_stats stats = {0};
     uint64_t last_rx_bytes = 0;
@@ -301,10 +311,40 @@ int get_and_print_nic_statistics(const uint16_t port_id)
     return 0;
 }
 
-void cleanup(const uint16_t port_id) 
+void cleanup(const uint16_t port_id, const uint16_t num_rx_queues, const uint16_t num_packet_processing_workers)
 {
     rte_eth_dev_stop(port_id);
     rte_eth_dev_close(port_id);
+
+    if (memory_pools) {
+        for (uint16_t i = 0; i < num_rx_queues; ++i) {
+            rte_mempool_free(memory_pools[i]);
+            memory_pools[i] = nullptr;
+        }
+
+        delete[] memory_pools;
+        memory_pools = nullptr;
+    }
+
+    if (ring_buffers) {
+        for (uint16_t i = 0; i < num_rx_queues; ++i) {
+            if (ring_buffers[i]) {                
+                for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
+                    if (ring_buffers[i][j]) {
+                        rte_ring_free(ring_buffers[i][j]);
+                        ring_buffers[i][j] = nullptr;
+                    }
+                }
+
+                delete[] ring_buffers[i];
+                ring_buffers[i] = nullptr;
+            }
+        }
+
+        delete[] ring_buffers;
+        ring_buffers = nullptr;
+    }
+
     rte_eal_cleanup();
 }
 
@@ -348,6 +388,7 @@ int main(int argc, char **argv)
     argc -= return_val;
     argv += return_val;
 
+    const std::string target_port = "0000:04:00.1";
     const uint16_t num_rx_queues = 1;
     const uint16_t num_tx_queues = 0;
     const uint16_t num_packet_processing_workers = 1;
@@ -389,8 +430,7 @@ int main(int argc, char **argv)
     
     // Detecting the available ports (ethernet interfaces) in the system.
     RTE_ETH_FOREACH_DEV(id) {
-        port_ids[total_port_count] = id;
-        total_port_count++;
+        port_ids[total_port_count++] = id;
         if (total_port_count >= RTE_MAX_ETHPORTS)
         {
             std::cerr << "Total number of detected ports exceeds RTE_MAX_ETHPORTS. " << std::endl;
@@ -407,6 +447,7 @@ int main(int argc, char **argv)
 
     std::cout << "Total ports detected: " << total_port_count << std::endl;
 
+    // Register the mbuf dynamic field for packet timestamps.
     const int32_t timestamp_dynfield_offset = rte_mbuf_dynfield_register(&timestamp_dynfield_descriptor);
     if (timestamp_dynfield_offset < 0) {
         std::cerr << "Unable to register mbuf dynamic field for timestamp. " << std::endl;
@@ -416,21 +457,57 @@ int main(int argc, char **argv)
 
     std::cout << "Timestamp dynamic field registered. Offset: " << timestamp_dynfield_offset << std::endl;
 
-    const std::string target_port = "0000:04:00.1";
+    // Check whether the target port is detected by the application.
     uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
     if (rte_eth_dev_get_port_by_name(target_port.c_str(), &target_port_id)) {
         std::cerr << "Unable to get port id against port: " << target_port << std::endl;
+        rte_eal_cleanup();
+        exit(1);
+    }
+    std::cout << "Target port: " << target_port << " detected by the application. Target port id: " << target_port_id << std::endl;
+
+    // Creating memory pool against each receive queue.
+    memory_pools = new rte_mempool* [num_rx_queues];
+    if (!memory_pools) {
+        std::cerr << "Unable to allocate memory pool array. " << std::endl;
+        rte_eal_cleanup();
+        exit(1);
     }
 
-    // Creating memory pool against each receive queue.    
-    rte_mempool **memory_pools = new rte_mempool* [num_rx_queues];
     for (uint16_t i = 0; i < num_rx_queues; ++i) {
         const std::string mempool_name = MEMORY_POOL_NAME_PREFIX + std::to_string(i);
         memory_pools[i] = rte_pktmbuf_pool_create(mempool_name.c_str(), MEMORY_POOL_SIZE, 512, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
         if (!memory_pools[i]) {
             std::cerr << "Unable to initialize memory pool: " << mempool_name << std::endl;
-            rte_eal_cleanup();
+            cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
             exit(1);
+        }
+    }
+
+    //Creating ring buffers for transfer of packets b/w packet reading and processing threads.
+    ring_buffers = new rte_ring** [num_rx_queues];
+    if (!ring_buffers) {
+        std::cerr << "Unable to allocate memory for ring buffers ..." << std::endl;
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+        exit(1);
+    }
+
+    for (uint16_t i = 0; i < num_rx_queues; ++i) {
+        ring_buffers[i] = new rte_ring* [num_packet_processing_workers];
+        if (!ring_buffers[i]) {
+            std::cerr << "Unable to allocate memory for ring buffers ..." << std::endl;
+            cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+            exit(1);
+        }
+
+        for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
+            const std::string ring_buffer_name = RING_BUFFER_NAME_PREFIX + std::to_string(i) + "_" + std::to_string(j);
+            ring_buffers[i][j] = rte_ring_create(ring_buffer_name.c_str(), RING_BUFFER_SIZE, rte_socket_id(), (RING_F_SP_ENQ | RING_F_SC_DEQ));
+            if (!ring_buffers[i][j]) {
+                std::cerr << "Unable to create ring buffer: " << ring_buffer_name << std::endl;
+                cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+                exit(1);
+            }
         }
     }
 
@@ -455,26 +532,26 @@ int main(int argc, char **argv)
         }*/
     };
 
-    // We will fetch the device info to check how many receive queues are supported by our NIC. Atlease two queues are required
-    // to test RSS (Receive Side Scaling).
+    // We will fetch the device info to check how many receive queues are supported by our ethernet device.
     rte_eth_dev_info devInfo;
     return_val = rte_eth_dev_info_get(target_port_id, &devInfo);
     if (return_val != 0) {
         printf("Error occurred while getting device info (port %u). Return code: %d", target_port_id, return_val);
-        rte_eal_cleanup();
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
         exit(1);
     }
 
-    /*if (devInfo.max_num_rx_queues <= 1) {
-        printf("Total Rx queues: %u found. Port Id: %u. Atleast two Rx queues are required to test RSS (Receive Side Scaling) in this tutorial. \n", devInfo.nb_num_rx_queues, target_pord_id);
-        rte_eal_cleanup();
+    if (num_rx_queues > devInfo.max_rx_queues) {
+        std::cerr << "Configured Rx queues: " << num_rx_queues << " exceeds the available device Rx queues: " 
+                  << devInfo.max_rx_queues << std::endl;
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
         exit(1);
-    }*/
+    }
 
     // Configure the port (ethernet interface).
     if ((return_val = rte_eth_dev_configure(target_port_id, num_rx_queues, num_tx_queues, &portConf)) != 0) {
         std::cerr << "Unable to configure port. port Id: " << target_port_id << " Return code: "  << return_val << std::endl;
-        rte_eal_cleanup();
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
         exit(1);
     }
 
@@ -483,11 +560,11 @@ int main(int argc, char **argv)
 
     // Configure the queue(s) of the port.
     for (uint16_t i = 0; i < num_rx_queues; i++) {
-        return_val = rte_eth_rx_queue_setup(target_port_id, i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pools[i]);
+        return_val = rte_eth_rx_queue_setup(target_port_id, i, NUM_QUEUE_RX_DESCRIPTORS, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pools[i]);
         
         if (return_val < 0) {
-            std::cerr << "Unable to setup Rx queue " << i << " Port Id: " << target_port_id << "Return code: " << return_val << std::endl;
-            rte_eal_cleanup();
+            std::cerr << "Unable to setup Rx queue: " << i << " Port Id: " << target_port_id << " Return code: " << return_val << std::endl;
+            cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
             exit(1);
         }
 
@@ -504,44 +581,16 @@ int main(int argc, char **argv)
 
     // All the configuration is done. Finally starting the port (ethernet interface) so that we can start receiving the packets.
     return_val = rte_eth_dev_start(target_port_id);
-    if (return_val < 0) 
-    {
+    if (return_val < 0) {
         std::cout << "Unable to start port Id: " << target_port_id << " Return code: " << return_val << std::endl;
-        rte_eal_cleanup();
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
         exit(1);
     }
 
     std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
 
-    //Creating ring buffers for transfer of packets b/w packet reading and processing threads.
-    rte_ring ***ring_buffers = new rte_ring** [num_rx_queues];
-    if (!ring_buffers) {
-        std::cerr << "Unable to allocate memory for ring buffers ..." << std::endl;
-        cleanup(target_port_id);
-        exit(1);
-    }
-
-    for (uint16_t i = 0; i < num_rx_queues; ++i) {
-        ring_buffers[i] = new rte_ring* [num_packet_processing_workers];
-        if (!ring_buffers[i]) {
-            std::cerr << "Unable to allocate memory for ring buffers ..." << std::endl;
-            cleanup(target_port_id);
-            exit(1);
-        }
-
-        for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
-            const std::string ring_buffer_name = RING_BUFFER_NAME_PREFIX + std::to_string(i) + "_" + std::to_string(j);
-            ring_buffers[i][j] = rte_ring_create(ring_buffer_name.c_str(), RING_BUFFER_SIZE, rte_socket_id(), (RING_F_SP_ENQ | RING_F_SC_DEQ));
-            if (!ring_buffers[i][j]) {
-                std::cerr << "Unable to allocate memory for ring buffers ..." << std::endl;
-                cleanup(target_port_id);
-                exit(1);
-            }
-        }
-    }
-
     uint16_t lcoreIdx = 1;    
-    // Initiating the packet reading threads.
+    // Initiating the packet reading and processing routines on the logical cores.
     for (uint16_t i = 0; i < num_rx_queues; ++i) {
         auto packetReadingParams = new PacketReadingThreadParams;
         packetReadingParams->port_id = target_port_id;
@@ -551,7 +600,7 @@ int main(int argc, char **argv)
 
         if ((return_val = rte_eal_remote_launch(read_packets, reinterpret_cast<void *>(packetReadingParams), logicalCores[lcoreIdx])) != 0) {
             std::cerr << "Unable to launch packet reading routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
-            cleanup(target_port_id);
+            cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
             exit(1);
         }
 
@@ -566,7 +615,7 @@ int main(int argc, char **argv)
 
             if ((return_val = rte_eal_remote_launch(process_packets, reinterpret_cast<void *>(packetProcessingParams), logicalCores[lcoreIdx])) != 0) {
                 std::cerr << "Unable to launch packet processing routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
-                cleanup(target_port_id);
+                cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
                 exit(1);
             }
 
@@ -574,22 +623,16 @@ int main(int argc, char **argv)
         }
     }
 
-    // Logical core 0 will get and print nic statistics.
-    get_and_print_nic_statistics(target_port_id);  
+    // Logical core 0 will be displaying the statistics.
+    get_and_print_nic_statistics(reinterpret_cast<void *>(&target_port_id));  
 
-    // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit our DPDK application.
+    // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit the application.
     for (uint16_t i = 1; i < logicalCores.size(); ++i) {
+        std::cout << "Waiting for logical core " << logicalCores[i] << " to join. " << std::endl;
         rte_eal_wait_lcore(logicalCores[i]);
     }
 
-    std::cout << "Exiting DPDK program ... " << std::endl;
-
-    for (uint16_t i = 0; i < num_rx_queues; ++i) {
-        rte_mempool_free(memory_pools[i]);
-        memory_pools[i] = nullptr;
-    }
-    delete[] memory_pools;
-
-    cleanup(target_port_id);
+    std::cout << "Exiting application ... " << std::endl;
+    cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
     return 0;
 }
