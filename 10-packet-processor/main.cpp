@@ -32,23 +32,28 @@
 #include <iomanip>
 #include <packet_dumper.hpp>
 
-constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC = 1000;              // 1 seconds.
-static const std::string MEMORY_POOL_NAME_PREFIX = "mempool_";       // Prefix name of memory pool.
-constexpr uint32_t MEMORY_POOL_SIZE = 65535;                         // Size of memory pool.
-constexpr uint32_t RING_BUFFER_SIZE = 2048;                          // Size of ring buffer.
-constexpr uint32_t RX_BURST_SIZE = 32;                               // RX burst size.
-static const std::string RING_BUFFER_NAME_PREFIX = "ring_buffer_";   // Ring buffer name prefix.
+constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
+constexpr uint32_t MEMORY_POOL_SIZE                   = 65535;       // Size of memory pool.
+constexpr uint32_t RING_BUFFER_SIZE                   = 2048;        // Size of ring buffer.
+constexpr uint32_t RX_BURST_SIZE                      = 32;          // Rx burst size.
+constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 5;           // Max packet processing worker count.
+constexpr uint32_t MAX_ETH_RX_QUEUES = 8;                            // Max Rx queues configured for ethernet port.
+static const std::string MEMORY_POOL_NAME_PREFIX      = "mempool_";       // Prefix name of memory pool.
+static const std::string RING_BUFFER_NAME_PREFIX      = "ring_buffer_";   // Ring buffer name prefix.
+
 
 static std::atomic<bool> exit_indicator = false;
 
-struct PacketReadingThreadParams {
+struct PacketReadingThreadParams 
+{
     uint16_t port_id {std::numeric_limits<decltype(port_id)>::max()};
     uint16_t queue_id {std::numeric_limits<decltype(queue_id)>::max()};
     uint16_t num_packet_processing_workers {0};
     int32_t timestamp_dynfield_offset {-1};
 };
 
-struct PacketProcessingThreadParams {
+struct PacketProcessingThreadParams 
+{
     uint16_t queue_id {std::numeric_limits<decltype(queue_id)>::max()};
     uint16_t worker_id {std::numeric_limits<decltype(worker_id)>::max()};
     int32_t timestamp_dynfield_offset {-1};
@@ -60,6 +65,14 @@ static const struct rte_mbuf_dynfield timestamp_dynfield_descriptor = {
     .align = __alignof__(uint64_t),
 };
 
+struct PacketReadingThreadStatistics 
+{
+    std::atomic<uint64_t> rx_packets {0};
+    std::atomic<uint64_t> worker_tx_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
+    std::atomic<uint64_t> worker_tx_drop_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
+};
+
+static PacketReadingThreadStatistics packet_reading_thread_statistics[MAX_ETH_RX_QUEUES];
 
 void terminate(int signal) 
 {
@@ -164,23 +177,36 @@ int read_packets(void *param)
             // No packets found. Check again.
             continue;
         }
-
+        
         // Timestamp the packets.
         clock_gettime(CLOCK_REALTIME, &ts);
         const uint64_t timestamp = (ts.tv_sec * 1000000000) + ts.tv_nsec;
         for (uint16_t i = 0; i < rx_count; ++i) {
             *(RTE_MBUF_DYNFIELD(rx_packets[i], timestamp_dynfield_offset, uint64_t *)) = timestamp;
-        }
+        }        
+
+        // Update the statistics.
+        packet_reading_thread_statistics[queue_id].rx_packets.store(
+            (packet_reading_thread_statistics[queue_id].rx_packets.load(std::memory_order_relaxed) + rx_count), 
+            std::memory_order_relaxed);
 
         for (uint16_t i = 0; i < num_packet_processing_workers; ++i) {
             ring_enqueue_count = rte_ring_enqueue_burst(ring_buffers[i], reinterpret_cast<void *const *>(rx_packets), rx_count, nullptr);
             
-            // Free up the packets in bulk.
+            // Update the statistics.
+            packet_reading_thread_statistics[queue_id].worker_tx_packets[i].store(
+                (packet_reading_thread_statistics[queue_id].worker_tx_packets[i].load(std::memory_order_relaxed) + ring_enqueue_count), 
+                std::memory_order_relaxed);
+
+            // Free up the packets in bulk which are unable to enqueued on the ring buffer.
             if (ring_enqueue_count < rx_count) {
                 rte_pktmbuf_free_bulk(&rx_packets[ring_enqueue_count], (rx_count - ring_enqueue_count));
+ 
+                // Update the statistics.
+                packet_reading_thread_statistics[queue_id].worker_tx_drop_packets[i].store(
+                    (packet_reading_thread_statistics[queue_id].worker_tx_drop_packets[i].load(std::memory_order_relaxed) + (rx_count - ring_enqueue_count)), 
+                    std::memory_order_relaxed);
             }
-
-            // Update the statistics.
         }
     }
     
@@ -240,6 +266,29 @@ int get_and_print_nic_statistics(const uint16_t port_id)
                 std::cout << "Transmit packet rate (mpps): " << tx_packet_rate << std::endl;
                 std::cout << "----------------------------------------------" << std::endl;
                 std::cout << std::endl;
+                
+                std::cout << "Packet Reading Thread(s) Statistics" << std::endl;
+                std::cout << "----------------------------------------------" << std::endl;
+                for (uint16_t i = 0; i < MAX_ETH_RX_QUEUES; ++i) {
+                    std::cout << "Rx queue: " << i;
+                    std::cout << " Rx packets: " << packet_reading_thread_statistics[i].rx_packets.load(std::memory_order_relaxed);
+
+                    std::cout << " Worker Tx packets: [ ";
+                    for (uint16_t j = 0; j < MAX_PACKET_PROCESSING_WORKER_COUNT; ++j) {
+                        std::cout << packet_reading_thread_statistics[i].worker_tx_packets[j].load(std::memory_order_relaxed);
+                        std::cout << " ";
+                    }
+                    std::cout << "]";
+
+                    std::cout << " Worker Tx drop packets: [ ";
+                    for (uint16_t j = 0; j < MAX_PACKET_PROCESSING_WORKER_COUNT; ++j) {
+                        std::cout << packet_reading_thread_statistics[i].worker_tx_drop_packets[j].load(std::memory_order_relaxed);
+                        std::cout << " ";
+                    }
+                    std::cout << "]";
+                    std::cout << std::endl;
+                }
+                std::cout << "----------------------------------------------" << std::endl;
             } else {
                 std::cerr << "Unable to get ethernet device statistics. Port id: " << port_id << " Return value: " << return_val << std::endl;
             }
@@ -313,14 +362,14 @@ int main(int argc, char **argv)
     }
     std::cout << std::endl;
 
-    if (num_rx_queues == 0) {
-        std::cerr << "Atleast one Rx queues is required to run the application ..." << std::endl;
+    if ((num_rx_queues == 0) || (num_rx_queues > MAX_ETH_RX_QUEUES)) {
+        std::cerr << "Invalid number of Rx queues. Max Rx queues allowed: " << MAX_ETH_RX_QUEUES << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    if (num_packet_processing_workers == 0) {
-        std::cerr << "Atleast one packet processing worker is required to run the application ..." << std::endl;
+    if ((num_packet_processing_workers == 0) || (num_packet_processing_workers > MAX_PACKET_PROCESSING_WORKER_COUNT)) {
+        std::cerr << "Invalid number of packet processing workers. Max workers allowed: " << MAX_PACKET_PROCESSING_WORKER_COUNT << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
