@@ -36,9 +36,9 @@ constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 second
 constexpr uint32_t MEMORY_POOL_SIZE                   = 65535;       // Size of memory pool.
 constexpr uint32_t RING_BUFFER_SIZE                   = 2048;        // Size of ring buffer.
 constexpr uint32_t RX_BURST_SIZE                      = 32;          // Rx burst size.
-constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 5;           // Max packet processing worker count.
-constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS               = 1024;    // Number of descriptors configured for Rx queue.
-constexpr uint32_t MAX_ETH_RX_QUEUES                  = 8;           // Max number of Rx queues configured for ethernet port.
+constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 4;           // Max packet processing worker count.
+constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS           = 1024;        // Number of descriptors configured for Rx queue.
+constexpr uint32_t MAX_ETH_RX_QUEUES                  = 4;           // Max number of Rx queues configured for ethernet port.
 static const std::string MEMORY_POOL_NAME_PREFIX      = "mempool_";       // Prefix name of memory pool.
 static const std::string RING_BUFFER_NAME_PREFIX      = "ring_buffer_";   // Ring buffer name prefix.
 
@@ -225,7 +225,7 @@ int get_and_print_nic_statistics(void *param)
     if (!param) {
         return -1;
     }
-    
+
     int return_val = -1;
     uint16_t port_id = *(reinterpret_cast<uint16_t *>(param));
     std::chrono::time_point<std::chrono::system_clock> t1 = std::chrono::system_clock::now();
@@ -280,22 +280,22 @@ int get_and_print_nic_statistics(void *param)
                 std::cout << "Packet Reading Thread(s) Statistics" << std::endl;
                 std::cout << "----------------------------------------------" << std::endl;
                 for (uint16_t i = 0; i < MAX_ETH_RX_QUEUES; ++i) {
-                    std::cout << "Rx queue: " << i;
-                    std::cout << " Rx packets: " << packet_reading_thread_statistics[i].rx_packets.load(std::memory_order_relaxed);
+                    std::cout << "Rx queue: " << i << std::endl;
+                    std::cout << "     Rx packets: " << packet_reading_thread_statistics[i].rx_packets.load(std::memory_order_relaxed) << std::endl;
 
-                    std::cout << " Worker Tx packets: [ ";
+                    std::cout << "     Worker Tx packets: [ ";
                     for (uint16_t j = 0; j < MAX_PACKET_PROCESSING_WORKER_COUNT; ++j) {
                         std::cout << packet_reading_thread_statistics[i].worker_tx_packets[j].load(std::memory_order_relaxed);
                         std::cout << " ";
                     }
-                    std::cout << "]";
+                    std::cout << "]" << std::endl;
 
-                    std::cout << " Worker Tx drop packets: [ ";
+                    std::cout << "     Worker Tx drop packets: [ ";
                     for (uint16_t j = 0; j < MAX_PACKET_PROCESSING_WORKER_COUNT; ++j) {
                         std::cout << packet_reading_thread_statistics[i].worker_tx_drop_packets[j].load(std::memory_order_relaxed);
                         std::cout << " ";
                     }
-                    std::cout << "]";
+                    std::cout << "]" << std::endl;
                     std::cout << std::endl;
                 }
                 std::cout << "----------------------------------------------" << std::endl;
