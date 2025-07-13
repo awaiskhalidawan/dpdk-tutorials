@@ -31,6 +31,7 @@
 #include <atomic>
 #include <iomanip>
 #include <packet_dumper.hpp>
+#include <cstring>
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
@@ -391,8 +392,9 @@ int main(int argc, char **argv)
     argc -= return_val;
     argv += return_val;
 
+    // Application input parameters. (Will be passed from command line in the future.)
     const std::string target_port = "0000:04:00.1";
-    const uint16_t num_rx_queues = 1;
+    const uint16_t num_rx_queues = 2;
     const uint16_t num_tx_queues = 0;
     const uint16_t num_packet_processing_workers = 1;
 
@@ -516,14 +518,28 @@ int main(int argc, char **argv)
 
     // Configuring the port (ethernet interface). An ethernet interface can have multiple receive queues and transmit queues. 
     // Currently we are setting up two receive queues and no transmit queue as we are not sending packets in this tutorial.
+ 
+    // Hash value supported by XL710-QDA2 adapter: 0x7ef8. According to this value the supported hash types are as below:
+    //  - RTE_ETH_RSS_FRAG_IPV4          RTE_BIT64(3)
+    //  - RTE_ETH_RSS_NONFRAG_IPV4_TCP   RTE_BIT64(4)
+    //  - RTE_ETH_RSS_NONFRAG_IPV4_UDP   RTE_BIT64(5)
+    //  - RTE_ETH_RSS_NONFRAG_IPV4_SCTP  RTE_BIT64(6)
+    //  - RTE_ETH_RSS_NONFRAG_IPV4_OTHER RTE_BIT64(7)
+    //  - RTE_ETH_RSS_FRAG_IPV6          RTE_BIT64(9)
+    //  - RTE_ETH_RSS_NONFRAG_IPV6_TCP   RTE_BIT64(10)
+    //  - RTE_ETH_RSS_NONFRAG_IPV6_UDP   RTE_BIT64(11)
+    //  - RTE_ETH_RSS_NONFRAG_IPV6_SCTP  RTE_BIT64(12)
+    //  - RTE_ETH_RSS_NONFRAG_IPV6_OTHER RTE_BIT64(13)
+    //  - RTE_ETH_RSS_L2_PAYLOAD         RTE_BIT64(14)
+
     rte_eth_conf portConf = {
         .rxmode = {
-            .mq_mode = RTE_ETH_MQ_RX_NONE
+            .mq_mode = RTE_ETH_MQ_RX_RSS
         },
         .txmode = {
             .mq_mode = RTE_ETH_MQ_TX_NONE
-        }
-        /*.rx_adv_conf = {
+        },
+        .rx_adv_conf = {
             .rss_conf = {
                 .rss_key = nullptr,                         // Using the default hash function by setting the rss_key to null.
                 //.rss_key_len = 40,
@@ -532,7 +548,7 @@ int main(int argc, char **argv)
                                                             // queues according to the calculated RSS hash. All the packets other then
                                                             // IPv4 fragmented packets will be always be queued to queue 0. 
             }
-        }*/
+        }
     };
 
     // We will fetch the device info to check how many receive queues are supported by our ethernet device.
@@ -563,7 +579,8 @@ int main(int argc, char **argv)
 
     // Configure the queue(s) of the port.
     for (uint16_t i = 0; i < num_rx_queues; i++) {
-        return_val = rte_eth_rx_queue_setup(target_port_id, i, NUM_QUEUE_RX_DESCRIPTORS, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pools[i]);
+        return_val = rte_eth_rx_queue_setup(target_port_id, i, NUM_QUEUE_RX_DESCRIPTORS, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, 
+                                            memory_pools[i]);
         
         if (return_val < 0) {
             std::cerr << "Unable to setup Rx queue: " << i << " Port Id: " << target_port_id << " Return code: " << return_val << std::endl;
@@ -591,6 +608,27 @@ int main(int argc, char **argv)
     }
 
     std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
+
+    /*rte_eth_rss_conf rss_conf = {0};
+    return_val = rte_eth_dev_rss_hash_conf_get(target_port_id, &rss_conf);
+    if (return_val) {
+        std::cout << "Unable to get RSS hash configuration. Target port id: " << target_port_id << " Return value: " << return_val << std::endl;
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+        exit(1);
+    }
+
+    std::cout << "Target port: " << target_port << " RSS hash configuration: " << std::endl;
+    std::cout << "Algorithm: " << rss_conf.algorithm << std::endl;
+    std::cout << "Supported hash functions: " << rss_conf.rss_hf << std::endl;
+    std::cout << "Key length: " << std::to_string(rss_conf.rss_key_len) << std::endl;
+    if (rss_conf.rss_key && rss_conf.rss_key_len) {
+        uint8_t *key = new uint8_t[rss_conf.rss_key_len + 1];
+        std::memcpy(key, rss_conf.rss_key, rss_conf.rss_key_len);
+        key[rss_conf.rss_key_len] = 0x00;
+        std::cout << "Key key: " << rss_conf.rss_key << std::endl;
+    }
+
+    return 0;*/
 
     uint16_t lcoreIdx = 1;    
     // Initiating the packet reading and processing routines on the logical cores.

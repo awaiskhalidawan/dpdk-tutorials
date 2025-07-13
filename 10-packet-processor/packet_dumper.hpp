@@ -15,6 +15,7 @@ private:
     std::string dump_pcap_dir {"/tmp"};
     uint32_t max_packet_dump_file_size_mb {100};
     int32_t packet_timestamp_dynfield_offset {-1};
+    uint64_t file_counter {0};
 
     bool createPacketDumpFile();
 
@@ -65,7 +66,6 @@ packet_dumper::~packet_dumper()
 
 bool packet_dumper::createPacketDumpFile()
 {
-    static uint64_t file_counter {0};
     const auto now = std::chrono::system_clock::now();
     std::time_t time_now = std::chrono::system_clock::to_time_t(now);
     std::tm local_time = *(std::localtime(&time_now));
