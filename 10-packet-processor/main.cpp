@@ -609,6 +609,18 @@ int main(int argc, char **argv)
 
     std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
 
+    return_val = rte_eth_dev_info_get(target_port_id, &devInfo);
+    if (return_val != 0) {
+        printf("Error occurred while getting device info (port %u). Return code: %d", target_port_id, return_val);
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+        exit(1);
+    }
+
+    std::cout << "RSS hash key size: " << devInfo.hash_key_size << std::endl;
+    std::cout << "RSS RETA size: " << devInfo.reta_size << std::endl;
+    std::cout << "RSS algorithm capabilities: " << devInfo.rss_algo_capa << std::endl;
+    std::cout << "RSS flow type offloads: " << devInfo.flow_type_rss_offloads << std::endl;
+
     /*rte_eth_rss_conf rss_conf = {0};
     return_val = rte_eth_dev_rss_hash_conf_get(target_port_id, &rss_conf);
     if (return_val) {
