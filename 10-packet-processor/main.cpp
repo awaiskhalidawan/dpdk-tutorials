@@ -28,10 +28,12 @@
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
+#include <rte_flow.h>
 #include <atomic>
 #include <iomanip>
 #include <packet_dumper.hpp>
 #include <cstring>
+#include <array>
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
@@ -80,6 +82,8 @@ static PacketReadingThreadStatistics packet_reading_thread_statistics[MAX_ETH_RX
 static rte_mempool **memory_pools {nullptr};
 
 static rte_ring ***ring_buffers {nullptr}; 
+
+static rte_flow *flow {nullptr};
 
 void terminate(int signal) 
 {
@@ -317,6 +321,11 @@ int get_and_print_nic_statistics(void *param)
 
 void cleanup(const uint16_t port_id, const uint16_t num_rx_queues, const uint16_t num_packet_processing_workers)
 {
+    if (flow) {
+	rte_flow_error flow_error;
+	rte_flow_destroy(port_id, flow, &flow_error);
+    }
+
     rte_eth_dev_stop(port_id);
     rte_eth_dev_close(port_id);
 
@@ -534,21 +543,21 @@ int main(int argc, char **argv)
 
     rte_eth_conf portConf = {
         .rxmode = {
-            .mq_mode = RTE_ETH_MQ_RX_RSS
+            .mq_mode = RTE_ETH_MQ_RX_NONE
         },
         .txmode = {
             .mq_mode = RTE_ETH_MQ_TX_NONE
-        },
+        }/*,
         .rx_adv_conf = {
             .rss_conf = {
-                .rss_key = nullptr,                         // Using the default hash function by setting the rss_key to null.
-                //.rss_key_len = 40,
-                .rss_hf = RTE_ETH_RSS_NONFRAG_IPV4_UDP      // RSS hash function is only applied to non-fragmented IPv4 packets. 
-                                                            // The IPv4 non-fragmented packets will be distributed among the receive 
-                                                            // queues according to the calculated RSS hash. All the packets other then
-                                                            // IPv4 fragmented packets will be always be queued to queue 0. 
+            //.rss_key = nullptr,                         // Using the default hash function by setting the rss_key to null.
+     	    //.rss_key_len = 40,
+            .rss_hf = RTE_ETH_RSS_NONFRAG_IPV4_UDP      // RSS hash function is only applied to non-fragmented IPv4 packets. 
+                                                        // The IPv4 non-fragmented packets will be distributed among the receive 
+                                                        // queues according to the calculated RSS hash. All the packets other then
+                                                        // UDP IPv4 fragmented packets will be always be queued to queue 0. 
             }
-        }
+        }*/
     };
 
     // We will fetch the device info to check how many receive queues are supported by our ethernet device.
@@ -602,14 +611,84 @@ int main(int argc, char **argv)
     // All the configuration is done. Finally starting the port (ethernet interface) so that we can start receiving the packets.
     return_val = rte_eth_dev_start(target_port_id);
     if (return_val < 0) {
-        std::cout << "Unable to start port Id: " << target_port_id << " Return code: " << return_val << std::endl;
+        std::cout << "Unable to start port. Port Id: " << target_port_id << " Return code: " << return_val << std::endl;
         cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
         exit(1);
     }
 
     std::cout << "Port configuration successful. Port Id: " << target_port_id << std::endl;
 
-    return_val = rte_eth_dev_info_get(target_port_id, &devInfo);
+    // Configure RTE flow.
+    /*rte_flow_error flow_error;
+    rte_flow_attr flow_attr = {0};
+    flow_attr.ingress = 1;
+    rte_flow_action flow_actions[2];
+    rte_flow_item flow_patterns[3];
+
+    std::array<uint8_t, 6> src_mac = {0x08, 0x00, 0x27, 0x95, 0xbd, 0xf1};
+    std::array<uint8_t, 6> dst_mac = {0x08, 0x00, 0x27, 0x35, 0x14, 0xf1};
+    
+    rte_flow_item_eth eth_spec = {0};
+    //std::memcpy(eth_spec.src.addr_bytes, src_mac.data(), sizeof(eth_spec.src.addr_bytes));
+    //std::memcpy(eth_spec.dst.addr_bytes, dst_mac.data(), sizeof(eth_spec.dst.addr_bytes));
+    //eth_spec.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+
+    rte_flow_item_eth eth_mask = {0};
+    //std::memset(eth_mask.src.addr_bytes, 0xFF, sizeof(eth_mask.src.addr_bytes));
+    //std::memset(eth_mask.dst.addr_bytes, 0xFF, sizeof(eth_mask.dst.addr_bytes)); 
+    //eth_mask.type = 0xFFFF;
+
+    rte_flow_item_ipv4 ipv4_spec = {0};
+    //std::memset(&ipv4_spec.hdr, 0x00, sizeof(ipv4_spec.hdr)); 
+    rte_flow_item_ipv4 ipv4_mask = {0};
+    //std::memset(&ipv4_mask.hdr, 0x00, sizeof(ipv4_mask.hdr));
+
+    //ipv4_spec.hdr.dst_addr = htonl(((100<<24) + (10<<16) + (100<<8) + 241));    // The dest ip value to match the input packet.
+    //ipv4_mask.hdr.dst_addr = 0xffffffff;            				  // The mask to apply to the dest ip. 
+    ipv4_spec.hdr.src_addr = htonl(((10<<24) + (10<<16) + (8<<8) + 241));     	  // The src ip value to match the input packet. 
+    ipv4_mask.hdr.src_addr = 0xffffffff;               				  // The mask to apply to the src ip. 
+
+    rte_flow_action_queue flow_action_queue = {0};
+    flow_action_queue.index = 1; 						  // The selected target queue.
+    flow_actions[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    flow_actions[0].conf = &flow_action_queue;
+    flow_actions[1].type = RTE_FLOW_ACTION_TYPE_END;
+    flow_actions[1].conf = nullptr;
+
+    flow_patterns[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    flow_patterns[0].spec = nullptr; // &eth_spec;
+    flow_patterns[0].last = nullptr;
+    flow_patterns[0].mask = nullptr; // &eth_mask;
+
+    flow_patterns[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+    flow_patterns[1].spec = &ipv4_spec;
+    flow_patterns[1].last = nullptr;
+    flow_patterns[1].mask = &ipv4_mask;
+
+    flow_patterns[2].type = RTE_FLOW_ITEM_TYPE_END;
+    flow_patterns[2].spec = nullptr;
+    flow_patterns[2].last = nullptr;
+    flow_patterns[2].mask = nullptr;
+
+    return_val = rte_flow_validate(target_port_id, &flow_attr, flow_patterns, flow_actions, &flow_error);
+    if (return_val != 0) {
+	std::cerr << "rte_flow_validate failed. Return value: " << return_val << " RTE errno: " << rte_errno << std::endl;
+	std::cerr << "RTE flow error type: " << flow_error.type << std::endl;
+	std::cerr << "RTE flow error message: " << flow_error.message << std::endl;
+	cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+        exit(1);
+    }
+
+    flow = rte_flow_create(target_port_id, &flow_attr, flow_patterns, flow_actions, &flow_error);
+    if (!flow) {
+	std::cerr << "rte_flow_create failed. RTE errno: " << rte_errno << std::endl;
+        std::cerr << "RTE flow error type: " << flow_error.type << std::endl;
+        std::cerr << "RTE flow error message: " << flow_error.message << std::endl;
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+        exit(1);
+    }*/
+
+    /*return_val = rte_eth_dev_info_get(target_port_id, &devInfo);
     if (return_val != 0) {
         printf("Error occurred while getting device info (port %u). Return code: %d", target_port_id, return_val);
         cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
@@ -621,7 +700,7 @@ int main(int argc, char **argv)
     std::cout << "RSS algorithm capabilities: " << devInfo.rss_algo_capa << std::endl;
     std::cout << "RSS flow type offloads: " << devInfo.flow_type_rss_offloads << std::endl;
 
-    /*rte_eth_rss_conf rss_conf = {0};
+    rte_eth_rss_conf rss_conf = {0};
     return_val = rte_eth_dev_rss_hash_conf_get(target_port_id, &rss_conf);
     if (return_val) {
         std::cout << "Unable to get RSS hash configuration. Target port id: " << target_port_id << " Return value: " << return_val << std::endl;
@@ -633,14 +712,13 @@ int main(int argc, char **argv)
     std::cout << "Algorithm: " << rss_conf.algorithm << std::endl;
     std::cout << "Supported hash functions: " << rss_conf.rss_hf << std::endl;
     std::cout << "Key length: " << std::to_string(rss_conf.rss_key_len) << std::endl;
+    
     if (rss_conf.rss_key && rss_conf.rss_key_len) {
         uint8_t *key = new uint8_t[rss_conf.rss_key_len + 1];
         std::memcpy(key, rss_conf.rss_key, rss_conf.rss_key_len);
         key[rss_conf.rss_key_len] = 0x00;
         std::cout << "Key key: " << rss_conf.rss_key << std::endl;
-    }
-
-    return 0;*/
+    }*/
 
     uint16_t lcoreIdx = 1;    
     // Initiating the packet reading and processing routines on the logical cores.

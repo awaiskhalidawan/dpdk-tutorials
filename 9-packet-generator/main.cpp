@@ -355,7 +355,7 @@ int transmit_packets_from_interface(void* param)
 
 
     const uint64_t packet_len = sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) + sizeof(rte_udp_hdr) + 172;
-    const uint64_t packets_per_second = 3000000;
+    const uint64_t packets_per_second = 30000;
     const uint64_t packet_tx_burst_size = 16;
     const uint64_t interburst_time_ns = (1 * 1000000000) / (packets_per_second / packet_tx_burst_size);
 
