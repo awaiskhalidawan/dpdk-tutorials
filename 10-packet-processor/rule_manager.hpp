@@ -5,6 +5,7 @@
 #include <rte_acl.h>
 #include <common.hpp>
 #include <vector>
+#include <spin_lock.hpp>
 
 static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
 
@@ -71,7 +72,7 @@ struct alignas(RTE_CACHE_LINE_SIZE) acl_context_info {
 	rte_acl_ctx *acl_ctx_data_plane {nullptr};
 	rte_acl_ctx *act_ctx_rule_manager {nullptr};
 	std::atomic<bool> is_acl_ctx_rule_manager_updated {false};
-	std::atomic_flag acl_ctx_lock {ATOMIC_FLAG_INIT};
+	spin_lock acl_ctx_lock;
 };
 
 

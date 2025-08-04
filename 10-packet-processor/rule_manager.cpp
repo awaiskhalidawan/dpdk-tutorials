@@ -65,9 +65,9 @@ rte_acl_ctx* rule_manager::get_data_plane_acl_ctx(const uint32_t port_id, const 
 
     if (acl_ctx.is_acl_ctx_rule_manager_updated.load(std::memory_order_relaxed)) {
         // The ACL context is updated by rule manager. Swap the data plane acl context with rule manager act context.
-        while (acl_ctx.acl_ctx_lock.test_and_set(std::memory_order_acquire));
+        acl_ctx.acl_ctx_lock.acquire();
         std::swap(acl_ctx.acl_ctx_data_plane, acl_ctx.act_ctx_rule_manager);        
-        acl_ctx.acl_ctx_lock.clear(std::memory_order_release);
+        acl_ctx.acl_ctx_lock.release();
 
         acl_ctx.is_acl_ctx_rule_manager_updated.store(false, std::memory_order_relaxed);
     }
