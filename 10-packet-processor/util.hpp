@@ -16,4 +16,16 @@ public:
 
         return tokens;
     }
+
+    /*
+     * @brief Converts the input string to non-negative integer.
+     * @return -1 on failure. 
+     */
+    static int string_to_int(const std::string& input_string) {
+        try {
+            return std::stoi(input_string);
+        } catch(const std::exception& e) {
+            return -1;
+        }
+    }
 };

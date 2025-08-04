@@ -46,8 +46,75 @@ bool rule_manager::start(const std::list<std::pair<uint32_t, uint32_t>> &port_an
             auto &rule = acl4_rules.emplace_back(acl4_rule());
             std::memset(&rule, 0x00, sizeof(rule));
 
-            for (const auto &token : tokens) {
+            for (auto iter = tokens.begin(); iter != tokens.end(); ) {
+                if (iter == tokens.begin()) {
+                    // The first token must be the rule id.
+                    const int32_t rule_id = util::string_to_int(*iter);
+                    if (rule_id < 0) {
+                        std::cerr << "Unable to parse rule id. " << std::endl;
+                        return false;
+                    }
+                    rule.data.userdata = rule_id & 0xFFFF;
+                } else {
+                    if (*iter == "pri") {
+                        if (++iter == tokens.end()) {
+                            std::cerr << "Invalid rule priority format. " << std::endl;
+                            return false;
+                        }
+
+                        const int32_t rule_pri = util::string_to_int(*iter);
+                        if (rule_pri < 0) {
+                            std::cerr << "Unable to parse rule priority. " << std::endl;
+                            return false;
+                        }
+                        rule.data.priority = rule_pri;
+                    } else if (*iter == "proto" || *iter == "sport" || *iter == "dport") {
+                        if (++iter == tokens.end()) {
+                            std::cerr << "Invalid protocol/port format. " << std::endl;
+                            return false;
+                        }
+
+                        const auto sub_tokens = util::tokenize_string(*iter, ':');
+                        if (sub_tokens.size() != 2) {
+                            std::cerr << "Invalid protocol/port format. " << std::endl;
+                            return false;
+                        }
+
+                        const int range_low = util::string_to_int(*(sub_tokens.begin()));
+                        const int range_high = util::string_to_int(*(++sub_tokens.begin()));
+
+                        if ((range_low < 0 || range_high < 0) || 
+                            (*iter == "proto" && (range_low > 0xFF || range_high > 0xFF)) ||
+                            ((*iter == "sport" || *iter == "dport") && (range_low > 0xFFFF || range_high > 0xFFFF))) {
+                            std::cerr << "Invalid protocol range value. " << std::endl;
+                            return false;
+                        }
+
+                        if (*iter == "proto") {
+                            rule.field[0].value.u8 = static_cast<uint8_t>(range_low);
+                            rule.field[0].mask_range.u8 = static_cast<uint8_t>(range_high);
+                        } else if (*iter == "sport") {
+                            rule.field[3].value.u16 = static_cast<uint16_t>(range_low);
+                            rule.field[3].mask_range.u16 = static_cast<uint16_t>(range_high);
+                        } else if (*iter == "dport") {
+                            rule.field[4].value.u16 = static_cast<uint16_t>(range_low);
+                            rule.field[4].mask_range.u16 = static_cast<uint16_t>(range_high);
+                        }
+                    } else if (*iter == "sip" || *iter == "dip") {
+                        if (++iter == tokens.end()) {
+                            std::cerr << "Invalid sip/dip format. " << std::endl;
+                            return false;
+                        }
+
+                        const auto sub_tokens = util::tokenize_string(*iter, '/');
+                        if (sub_tokens.size() != 2) {
+                            std::cerr << "Invalid sip/dip format. " << std::endl;
+                            return false;
+                        }
+                    }
+                }
                 
+                ++iter;
             }
         }
     }
