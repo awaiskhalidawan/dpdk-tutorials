@@ -1,6 +1,7 @@
 set(TARGET_NAME "packet-processor")
 
 add_executable(${TARGET_NAME}
+  rule_manager.cpp
   main.cpp
 )
 
