@@ -32,9 +32,8 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
     }
     
     // Check port and queue indexes.
-    for (const auto &port_and_queue_info : port_and_queue_info_list) {
-        if (port_and_queue_info.first >= RTE_MAX_ETHPORTS ||
-            port_and_queue_info.second >= MAX_QUEUES) {
+    for (const auto &[port_id, num_queues] : port_and_queue_info_list) {
+        if (port_id >= RTE_MAX_ETHPORTS || num_queues >= MAX_QUEUES) {
             return false;
         }
     }
