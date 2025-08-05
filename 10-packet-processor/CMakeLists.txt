@@ -19,4 +19,5 @@ target_link_libraries(${TARGET_NAME} PUBLIC
   -lrte_mempool
   -lrte_mbuf
   -lrte_ring
+  -lrte_acl
 )

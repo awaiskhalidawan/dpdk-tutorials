@@ -6,7 +6,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 
-rule_manager::rule_manager() {
+rule_manager::rule_manager() : is_initialized(false) {
 
 }
 
@@ -16,10 +16,20 @@ rule_manager& rule_manager::get_instance() {
 }
 	
 rule_manager::~rule_manager() {
-    
+    acl4_rules.clear();
+
+    for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+        for (uint16_t i = 0; i < num_queues; ++i) {
+            rte_acl_free(acl_ctx_info[port_id][i].acl_ctx_data_plane);
+            rte_acl_free(acl_ctx_info[port_id][i].acl_ctx_rule_manager);
+        }
+    }
 }
 
-bool rule_manager::start(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info_list) {
+bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info_list) {
+    if (is_initialized) {
+        return true;
+    }
     
     // Check port and queue indexes.
     for (const auto &port_and_queue_info : port_and_queue_info_list) {
@@ -28,6 +38,8 @@ bool rule_manager::start(const std::list<std::pair<uint32_t, uint32_t>> &port_an
             return false;
         }
     }
+
+    this->port_and_queue_info_list = port_and_queue_info_list;
 
     // Read the file to load the stored rules.
     if (std::filesystem::exists(RULE_STORAGE_FILE_PATH)) {
@@ -133,14 +145,69 @@ bool rule_manager::start(const std::list<std::pair<uint32_t, uint32_t>> &port_an
                 
                 ++iter;
             }
+
+            rte_acl_param acl_param {0};          
+            rte_acl_config acl_build_param {0};
+            rte_acl_ctx *acl_ctx {nullptr};
+
+            for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+                for (uint16_t i = 0; i < num_queues; ++i) {
+                    std::memset(&acl_param, 0x00, sizeof(acl_param));
+                    std::string acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_dp";
+                    acl_param.name = acl_ctx_name.c_str();
+                    acl_param.socket_id = rte_socket_id();
+                    acl_param.rule_size = RTE_ACL_RULE_SZ(RTE_DIM(ipv4_defs));
+                    acl_param.max_rule_num = acl4_rules.size();
+                    acl_ctx = rte_acl_create(&acl_param);
+                    if (!acl_ctx) {
+                        std::cerr << "Failed to create acl context. " << std::endl;
+                        return false;
+                    }
+
+                    if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
+                        std::cerr << "Unable to add rules to acl context. " << std::endl;
+                        rte_acl_free(acl_ctx);
+                        return false;
+                    }
+                    acl_ctx_info[port_id][i].acl_ctx_data_plane = acl_ctx;
+
+                    acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_rm";
+                    acl_param.name = acl_ctx_name.c_str();
+                    acl_ctx = rte_acl_create(&acl_param);
+                    if (!acl_ctx) {
+                        std::cerr << "Failed to create acl context. " << std::endl;
+                        return false;
+                    }
+
+                    if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
+                        std::cerr << "Unable to add rules to acl context. " << std::endl;
+                        rte_acl_free(acl_ctx);
+                        return false;
+                    }
+                    acl_ctx_info[port_id][i].acl_ctx_rule_manager = acl_ctx;
+
+                    std::memset(&acl_build_param, 0x00, sizeof(acl_build_param));
+                    acl_build_param.num_categories = DEFAULT_MAX_CATEGORIES;
+                    acl_build_param.num_fields = RTE_DIM(ipv4_defs);
+                    std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
+
+                    if (rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_data_plane, &acl_build_param) != 0) {
+                        std::cerr << "Unable to build ACL context. " << std::endl;
+                        return false;
+                    }
+
+                    if (rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_rule_manager, &acl_build_param) != 0) {
+                        std::cerr << "Unable to build ACL context. " << std::endl;
+                        return false;
+                    }
+                }
+            }
         }
+    } else {
+        return false;
     }
 
-    return true;
-}
-
-bool rule_manager::stop() {
-
+    is_initialized = true;
     return true;
 }
 
@@ -150,7 +217,7 @@ rte_acl_ctx* rule_manager::get_data_plane_acl_ctx(const uint32_t port_id, const 
     if (acl_ctx.is_acl_ctx_rule_manager_updated.load(std::memory_order_relaxed)) {
         // The ACL context is updated by rule manager. Swap the data plane acl context with rule manager act context.
         acl_ctx.acl_ctx_lock.acquire();
-        std::swap(acl_ctx.acl_ctx_data_plane, acl_ctx.act_ctx_rule_manager);        
+        std::swap(acl_ctx.acl_ctx_data_plane, acl_ctx.acl_ctx_rule_manager);        
         acl_ctx.acl_ctx_lock.release();
 
         acl_ctx.is_acl_ctx_rule_manager_updated.store(false, std::memory_order_relaxed);

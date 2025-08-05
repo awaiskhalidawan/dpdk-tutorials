@@ -8,6 +8,7 @@
 #include <spin_lock.hpp>
 
 static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
+constexpr uint8_t DEFAULT_MAX_CATEGORIES = 1;
 
 struct ipv4_5tuple {
     uint8_t proto      {0};
@@ -17,7 +18,7 @@ struct ipv4_5tuple {
     uint16_t port_dst  {0};
 };
 
-struct rte_acl_field_def ipv4_defs[5] = {
+static struct rte_acl_field_def ipv4_defs[5] = {
     /* first input field - always one byte long. */
     {
         .type = RTE_ACL_FIELD_TYPE_BITMASK,
@@ -70,7 +71,7 @@ RTE_ACL_RULE_DEF(acl4_rule, RTE_DIM(ipv4_defs));
 
 struct alignas(RTE_CACHE_LINE_SIZE) acl_context_info {
 	rte_acl_ctx *acl_ctx_data_plane {nullptr};
-	rte_acl_ctx *act_ctx_rule_manager {nullptr};
+	rte_acl_ctx *acl_ctx_rule_manager {nullptr};
 	std::atomic<bool> is_acl_ctx_rule_manager_updated {false};
 	spin_lock acl_ctx_lock;
 };
@@ -82,16 +83,17 @@ private:
 
     std::vector<acl4_rule> acl4_rules;
 	
+    bool is_initialized {false};
 public:
 	static rule_manager& get_instance();
 	
 	~rule_manager();
 	
-	bool start(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info);
-	
-	bool stop();
+	bool initialize(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info);
 
     rte_acl_ctx* get_data_plane_acl_ctx(const uint32_t port_id, const uint32_t queue_id);
 	
 	acl_context_info acl_ctx_info[RTE_MAX_ETHPORTS][MAX_QUEUES];
+
+    std::list<std::pair<uint32_t, uint32_t>> port_and_queue_info_list;
 };

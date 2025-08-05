@@ -31,9 +31,10 @@
 #include <rte_flow.h>
 #include <atomic>
 #include <iomanip>
-#include <packet_dumper.hpp>
 #include <cstring>
 #include <array>
+#include <packet_dumper.hpp>
+#include <rule_manager.hpp>
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
@@ -407,6 +408,23 @@ int main(int argc, char **argv)
     const uint16_t num_tx_queues = 0;
     const uint16_t num_packet_processing_workers = 1;
 
+    // Check whether the target port is detected by the application.
+    uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
+    if (rte_eth_dev_get_port_by_name(target_port.c_str(), &target_port_id)) {
+        std::cerr << "Unable to get port id against port: " << target_port << std::endl;
+        rte_eal_cleanup();
+        exit(1);
+    }
+    std::cout << "Target port: " << target_port << " detected by the application. Target port id: " << target_port_id << std::endl;
+
+    std::list<std::pair<uint32_t, uint32_t>> port_and_queue_info_list;
+    port_and_queue_info_list.push_back(std::make_pair(target_port_id, num_rx_queues));
+    auto &rule_mngr = rule_manager::get_instance();
+    if (!rule_mngr.initialize(port_and_queue_info_list)) {
+        rte_eal_cleanup();
+        exit(1);
+    }
+
     // Detecting the logical cores (CPUs) ids passed to this DPDK application. 
     uint16_t i = 0;
     std::vector<uint16_t> logicalCores;
@@ -470,15 +488,6 @@ int main(int argc, char **argv)
     }
 
     std::cout << "Timestamp dynamic field registered. Offset: " << timestamp_dynfield_offset << std::endl;
-
-    // Check whether the target port is detected by the application.
-    uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
-    if (rte_eth_dev_get_port_by_name(target_port.c_str(), &target_port_id)) {
-        std::cerr << "Unable to get port id against port: " << target_port << std::endl;
-        rte_eal_cleanup();
-        exit(1);
-    }
-    std::cout << "Target port: " << target_port << " detected by the application. Target port id: " << target_port_id << std::endl;
 
     // Creating memory pool against each receive queue.
     memory_pools = new rte_mempool* [num_rx_queues];
