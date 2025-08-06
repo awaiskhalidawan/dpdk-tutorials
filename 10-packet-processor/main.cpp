@@ -403,7 +403,7 @@ int main(int argc, char **argv)
     argv += return_val;
 
     // Application input parameters. (Will be passed from command line in the future.)
-    const std::string target_port = "0000:04:00.1";
+    const std::string target_port = "0000:00:08.0"; //"0000:04:00.1";
     const uint16_t num_rx_queues = 2;
     const uint16_t num_tx_queues = 0;
     const uint16_t num_packet_processing_workers = 1;

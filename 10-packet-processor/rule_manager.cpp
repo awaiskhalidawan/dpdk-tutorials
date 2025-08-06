@@ -78,7 +78,9 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
                     rule.data.priority = rule_pri;
+                    rule.data.category_mask = 0xFF;
                 } else if (*iter == "proto" || *iter == "sport" || *iter == "dport") {
+                    const std::string current_token = *iter;
                     if (++iter == tokens.end()) {
                         std::cerr << "Invalid protocol/port format. " << std::endl;
                         return false;
@@ -91,22 +93,23 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                     const int range_low = util::string_to_int(*(sub_tokens.begin()));
                     const int range_high = util::string_to_int(*(++sub_tokens.begin()));
                     if ((range_low < 0 || range_high < 0) || 
-                        (*iter == "proto" && (range_low > 0xFF || range_high > 0xFF)) ||
-                        ((*iter == "sport" || *iter == "dport") && (range_low > 0xFFFF || range_high > 0xFFFF))) {
+                        (current_token == "proto" && (range_low > 0xFF || range_high > 0xFF)) ||
+                        ((current_token == "sport" || current_token == "dport") && (range_low > 0xFFFF || range_high > 0xFFFF))) {
                         std::cerr << "Invalid protocol range value. " << std::endl;
                         return false;
                     }
-                    if (*iter == "proto") {
+                    if (current_token == "proto") {
                         rule.field[0].value.u8 = static_cast<uint8_t>(range_low);
                         rule.field[0].mask_range.u8 = static_cast<uint8_t>(range_high);
-                    } else if (*iter == "sport") {
+                    } else if (current_token == "sport") {
                         rule.field[3].value.u16 = static_cast<uint16_t>(range_low);
                         rule.field[3].mask_range.u16 = static_cast<uint16_t>(range_high);
-                    } else if (*iter == "dport") {
+                    } else if (current_token == "dport") {
                         rule.field[4].value.u16 = static_cast<uint16_t>(range_low);
                         rule.field[4].mask_range.u16 = static_cast<uint16_t>(range_high);
                     }
                 } else if (*iter == "sip" || *iter == "dip") {
+                    const std::string current_token = *iter;
                     if (++iter == tokens.end()) {
                         std::cerr << "Invalid sip/dip format. " << std::endl;
                         return false;
@@ -132,10 +135,10 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                             return false;
                         }
                         const uint32_t ipv4 = *reinterpret_cast<uint32_t *>(ip_buffer);
-                        if (*iter == "sip") {
+                        if (current_token == "sip") {
                             rule.field[1].value.u32 = ntohl(ipv4);
                             rule.field[1].mask_range.u32 = ipv4_mask;
-                        } else if (*iter == "dip") {
+                        } else if (current_token == "dip") {
                             rule.field[2].value.u32 = ntohl(ipv4);
                             rule.field[2].mask_range.u32 = ipv4_mask;
                         }
@@ -163,7 +166,8 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
 
-                    if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
+                    int return_val = rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size());
+                    if (return_val < 0) {
                         std::cerr << "Unable to add rules to acl context. " << std::endl;
                         rte_acl_free(acl_ctx);
                         return false;
@@ -190,13 +194,15 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                     acl_build_param.num_fields = RTE_DIM(ipv4_defs);
                     std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
 
-                    if (rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_data_plane, &acl_build_param) != 0) {
-                        std::cerr << "Unable to build ACL context. " << std::endl;
+                    return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_data_plane, &acl_build_param);
+                    if (return_val != 0) {
+                        std::cerr << "Unable to build ACL context. Return value: " << return_val << std::endl;
                         return false;
                     }
 
-                    if (rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_rule_manager, &acl_build_param) != 0) {
-                        std::cerr << "Unable to build ACL context. " << std::endl;
+                    return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_rule_manager, &acl_build_param);
+                    if (return_val != 0) {
+                        std::cerr << "Unable to build ACL context. Return val: " << return_val << std::endl;
                         return false;
                     }
                 }
