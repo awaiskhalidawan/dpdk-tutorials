@@ -91,6 +91,8 @@ public:
 	
 	bool initialize(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info);
 
+    void cleanup();
+
     rte_acl_ctx* get_data_plane_acl_ctx(const uint32_t port_id, const uint32_t queue_id);
 	
 	acl_context_info acl_ctx_info[RTE_MAX_ETHPORTS][MAX_QUEUES];

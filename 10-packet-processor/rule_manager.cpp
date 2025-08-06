@@ -16,6 +16,10 @@ rule_manager& rule_manager::get_instance() {
 }
 	
 rule_manager::~rule_manager() {
+
+}
+
+void rule_manager::cleanup() {
     acl4_rules.clear();
 
     for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
@@ -49,6 +53,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
         }
 
         std::string line;
+        int32_t previous_rule_id = -1;
         while (std::getline(rule_storage_file, line)) {
             // Process each line entry in rule storage file.
             std::cout << "Processing rule: " << line << std::endl;
@@ -66,6 +71,12 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         std::cerr << "Unable to parse rule id. " << std::endl;
                         return false;
                     }
+
+                    if (rule_id <= previous_rule_id) {
+                        std::cerr << "Incorrect/duplicate rule id found. " << std::endl;
+                        return false;
+                    }
+                    previous_rule_id = rule_id;
                     rule.data.userdata = rule_id & 0xFFFF;
                 } else if (*iter == "pri") {
                     if (++iter == tokens.end()) {
@@ -147,67 +158,69 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                 
                 ++iter;
             }
+        }
 
-            rte_acl_param acl_param {0};          
-            rte_acl_config acl_build_param {0};
-            rte_acl_ctx *acl_ctx {nullptr};
+        rte_acl_param acl_param {0};          
+        rte_acl_config acl_build_param {0};
+        rte_acl_ctx *acl_ctx {nullptr};
 
-            for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
-                for (uint16_t i = 0; i < num_queues; ++i) {
-                    std::memset(&acl_param, 0x00, sizeof(acl_param));
-                    std::string acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_dp";
-                    acl_param.name = acl_ctx_name.c_str();
-                    acl_param.socket_id = rte_socket_id();
-                    acl_param.rule_size = RTE_ACL_RULE_SZ(RTE_DIM(ipv4_defs));
-                    acl_param.max_rule_num = acl4_rules.size();
-                    acl_ctx = rte_acl_create(&acl_param);
-                    if (!acl_ctx) {
-                        std::cerr << "Failed to create acl context. " << std::endl;
-                        return false;
-                    }
+        for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+            for (uint16_t i = 0; i < num_queues; ++i) {
+                std::memset(&acl_param, 0x00, sizeof(acl_param));
+                std::string acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_dp";
+                acl_param.name = acl_ctx_name.c_str();
+                acl_param.socket_id = rte_socket_id();
+                acl_param.rule_size = RTE_ACL_RULE_SZ(RTE_DIM(ipv4_defs));
+                acl_param.max_rule_num = acl4_rules.size();
+                acl_ctx = rte_acl_create(&acl_param);
+                if (!acl_ctx) {
+                    std::cerr << "Failed to create acl context. " << std::endl;
+                    return false;
+                }
 
-                    int return_val = rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size());
-                    if (return_val < 0) {
-                        std::cerr << "Unable to add rules to acl context. " << std::endl;
-                        rte_acl_free(acl_ctx);
-                        return false;
-                    }
-                    acl_ctx_info[port_id][i].acl_ctx_data_plane = acl_ctx;
+                int return_val = rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size());
+                if (return_val < 0) {
+                    std::cerr << "Unable to add rules to acl context. " << std::endl;
+                    rte_acl_free(acl_ctx);
+                    return false;
+                }
+                acl_ctx_info[port_id][i].acl_ctx_data_plane = acl_ctx;
+                acl_ctx = nullptr;
 
-                    acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_rm";
-                    acl_param.name = acl_ctx_name.c_str();
-                    acl_ctx = rte_acl_create(&acl_param);
-                    if (!acl_ctx) {
-                        std::cerr << "Failed to create acl context. " << std::endl;
-                        return false;
-                    }
+                acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_rm";
+                acl_param.name = acl_ctx_name.c_str();
+                acl_ctx = rte_acl_create(&acl_param);
+                if (!acl_ctx) {
+                    std::cerr << "Failed to create acl context. " << std::endl;
+                    return false;
+                }
 
-                    if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
-                        std::cerr << "Unable to add rules to acl context. " << std::endl;
-                        rte_acl_free(acl_ctx);
-                        return false;
-                    }
-                    acl_ctx_info[port_id][i].acl_ctx_rule_manager = acl_ctx;
+                if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
+                    std::cerr << "Unable to add rules to acl context. " << std::endl;
+                    rte_acl_free(acl_ctx);
+                    return false;
+                }
+                acl_ctx_info[port_id][i].acl_ctx_rule_manager = acl_ctx;
+                acl_ctx = nullptr;
 
-                    std::memset(&acl_build_param, 0x00, sizeof(acl_build_param));
-                    acl_build_param.num_categories = DEFAULT_MAX_CATEGORIES;
-                    acl_build_param.num_fields = RTE_DIM(ipv4_defs);
-                    std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
+                std::memset(&acl_build_param, 0x00, sizeof(acl_build_param));
+                acl_build_param.num_categories = DEFAULT_MAX_CATEGORIES;
+                acl_build_param.num_fields = RTE_DIM(ipv4_defs);
+                std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
 
-                    return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_data_plane, &acl_build_param);
-                    if (return_val != 0) {
-                        std::cerr << "Unable to build ACL context. Return value: " << return_val << std::endl;
-                        return false;
-                    }
+                return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_data_plane, &acl_build_param);
+                if (return_val != 0) {
+                    std::cerr << "Unable to build ACL context. Return value: " << return_val << std::endl;
+                    return false;
+                }
 
-                    return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_rule_manager, &acl_build_param);
-                    if (return_val != 0) {
-                        std::cerr << "Unable to build ACL context. Return val: " << return_val << std::endl;
-                        return false;
-                    }
+                return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_rule_manager, &acl_build_param);
+                if (return_val != 0) {
+                    std::cerr << "Unable to build ACL context. Return val: " << return_val << std::endl;
+                    return false;
                 }
             }
-        }
+        }    
     } else {
         return false;
     }

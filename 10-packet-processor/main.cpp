@@ -421,6 +421,7 @@ int main(int argc, char **argv)
     port_and_queue_info_list.push_back(std::make_pair(target_port_id, num_rx_queues));
     auto &rule_mngr = rule_manager::get_instance();
     if (!rule_mngr.initialize(port_and_queue_info_list)) {
+        rule_mngr.cleanup();
         rte_eal_cleanup();
         exit(1);
     }
