@@ -8,6 +8,7 @@
 #include <spin_lock.hpp>
 
 static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
+constexpr uint8_t CATEGORY_0 = 0;
 constexpr uint8_t DEFAULT_MAX_CATEGORIES = 1;
 
 struct ipv4_5tuple {

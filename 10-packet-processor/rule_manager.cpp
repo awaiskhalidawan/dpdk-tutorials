@@ -89,7 +89,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
                     rule.data.priority = rule_pri;
-                    rule.data.category_mask = 0xFF;
+                    rule.data.category_mask = 1 << CATEGORY_0;
                 } else if (*iter == "proto" || *iter == "sport" || *iter == "dport") {
                     const std::string current_token = *iter;
                     if (++iter == tokens.end()) {
