@@ -296,9 +296,9 @@ int get_and_print_nic_statistics(const uint16_t port_id)
                 auto now = std::chrono::system_clock::now();
                 auto in_time_t = std::chrono::system_clock::to_time_t(now);
 
-                const double rx_packet_rate = (static_cast<double>(stats.ipackets - last_rx_packets) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+                const double rx_packet_rate = (static_cast<double>(stats.ipackets - last_rx_packets) / (static_cast<double>(diff.count()) / 1000.0));
                 last_rx_packets = stats.ipackets;
-                const double tx_packet_rate = (static_cast<double>(stats.opackets - last_tx_packets) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+                const double tx_packet_rate = (static_cast<double>(stats.opackets - last_tx_packets) / (static_cast<double>(diff.count()) / 1000.0));
                 last_tx_packets = stats.opackets;
 
                 const double rx_data_rate = (static_cast<double>((stats.ibytes - last_rx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
@@ -320,8 +320,8 @@ int get_and_print_nic_statistics(const uint16_t port_id)
                 std::cout << std::endl;
                 std::cout << "Receive  data rate (mbps): " << rx_data_rate << std::endl;
                 std::cout << "Transmit data rate (mbps): " << tx_data_rate << std::endl;
-                std::cout << "Receive  packet rate (mpps): " << rx_packet_rate << std::endl;
-                std::cout << "Transmit packet rate (mpps): " << tx_packet_rate << std::endl;
+                std::cout << std::fixed << std::setprecision(1) << "Receive  packet rate (pps): " << rx_packet_rate << std::endl;
+                std::cout << std::fixed << std::setprecision(1) << "Transmit packet rate (pps): " << tx_packet_rate << std::endl;
                 std::cout << "----------------------------------------------" << std::endl;
                 std::cout << std::endl;
             } else {
@@ -355,7 +355,7 @@ int transmit_packets_from_interface(void* param)
 
 
     const uint64_t packet_len = sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) + sizeof(rte_udp_hdr) + 172;
-    const uint64_t packets_per_second = 30000;
+    const uint64_t packets_per_second = 6250000; //30000;
     const uint64_t packet_tx_burst_size = 16;
     const uint64_t interburst_time_ns = (1 * 1000000000) / (packets_per_second / packet_tx_burst_size);
 

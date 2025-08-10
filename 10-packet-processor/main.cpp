@@ -64,6 +64,13 @@ struct PacketReadingThreadParams
     int32_t timestamp_dynfield_offset {-1};
 };
 
+struct StatisticsThreadParams
+{
+    uint16_t port_id {std::numeric_limits<decltype(port_id)>::max()};
+    uint16_t num_rx_queues {0};
+    uint16_t num_packet_processing_workers {0};
+};
+
 struct PacketProcessingThreadParams 
 {
     uint16_t queue_id {std::numeric_limits<decltype(queue_id)>::max()};
@@ -81,6 +88,8 @@ struct PacketReadingThreadStatistics
 {
     std::atomic<uint64_t> rx_packets {0};
     std::atomic<uint64_t> unknown_type_rx_packets {0};
+    std::atomic<uint64_t> ipv4_rx_packets {0};
+    std::atomic<uint64_t> ipv6_rx_packets {0};
     std::atomic<uint64_t> acl_classify_failures {0};
     std::atomic<uint64_t> worker_tx_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
     std::atomic<uint64_t> worker_tx_drop_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
@@ -230,30 +239,33 @@ int read_packets(void *param)
 
         ipv4_rx_packet_count = ipv6_rx_packet_count = unknown_type_rx_packet_count = 0;
         for (uint16_t i = 0; i < rx_count; ++i) {
-            /*if (rx_packets[i]->packet_type) {
+            if (rx_packets[i]->packet_type & RTE_PTYPE_L3_IPV4 == RTE_PTYPE_L3_IPV4) {
                 ipv4_rx_packets[ipv4_rx_packet_count++] = std::exchange(rx_packets[i], nullptr);
-            } else if (rx_packets[i]->packet_type == 1) {
+            } else if (rx_packets[i]->packet_type & RTE_PTYPE_L3_IPV6 == RTE_PTYPE_L3_IPV6) {
                 ipv6_rx_packets[ipv6_rx_packet_count++] = std::exchange(rx_packets[i], nullptr);
             } else {
                 ++unknown_type_rx_packet_count;
-            }*/
-
-            printf("Packet received with type: %d len: %d \n", rx_packets[i]->packet_type, rx_packets[i]->data_len);
+            }
         }
 
         ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].unknown_type_rx_packets, unknown_type_rx_packet_count);
-
-        // Free the received packets which are not identified.
+	ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv4_rx_packets, ipv4_rx_packet_count);
+        ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv6_rx_packets, ipv6_rx_packet_count);
+	
+	// Free the received packets which are not identified.
         rte_pktmbuf_free_bulk(rx_packets, rx_count);
 
-        /*for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
+        for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
             ipv4_acl_inputs[i] = rte_pktmbuf_mtod(ipv4_rx_packets[i], uint8_t *) + sizeof(rte_ether_hdr) + offsetof(rte_ipv4_hdr, next_proto_id);
         }
 
         int return_val = rte_acl_classify(ipv4_acl_ctx, ipv4_acl_inputs, ipv4_acl_results, ipv4_rx_packet_count, DEFAULT_MAX_CATEGORIES);
         if (unlikely(return_val)) {
-            ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, !!return_val);
-        }*/
+            ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, 1);
+        }
+
+	rte_pktmbuf_free_bulk(ipv4_rx_packets, ipv4_rx_packet_count);
+        rte_pktmbuf_free_bulk(ipv6_rx_packets, ipv6_rx_packet_count);
 
         /*for (uint16_t i = 0; i < num_packet_processing_workers; ++i) {
             ring_enqueue_count = rte_ring_enqueue_burst(ring_buffers[i], reinterpret_cast<void *const *>(rx_packets), rx_count, nullptr);
@@ -283,7 +295,11 @@ int get_and_print_nic_statistics(void *param)
     }
 
     int return_val = -1;
-    uint16_t port_id = *(reinterpret_cast<uint16_t *>(param));
+    auto statisticsThreadParams = reinterpret_cast<StatisticsThreadParams *>(param);
+    const uint16_t port_id = statisticsThreadParams->port_id;
+    const uint16_t num_rx_queues = statisticsThreadParams->num_rx_queues;
+    const uint16_t num_packet_processing_workers = statisticsThreadParams->num_packet_processing_workers;
+
     std::chrono::time_point<std::chrono::system_clock> t1 = std::chrono::system_clock::now();
     rte_eth_stats stats = {0};
     uint64_t last_rx_bytes = 0;
@@ -304,9 +320,9 @@ int get_and_print_nic_statistics(void *param)
                 auto now = std::chrono::system_clock::now();
                 auto in_time_t = std::chrono::system_clock::to_time_t(now);
 
-                const double rx_packet_rate = (static_cast<double>(stats.ipackets - last_rx_packets) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+                const double rx_packet_rate = (static_cast<double>(stats.ipackets - last_rx_packets) / (static_cast<double>(diff.count()) / 1000.0));
                 last_rx_packets = stats.ipackets;
-                const double tx_packet_rate = (static_cast<double>(stats.opackets - last_tx_packets) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+                const double tx_packet_rate = (static_cast<double>(stats.opackets - last_tx_packets) / (static_cast<double>(diff.count()) / 1000.0));
                 last_tx_packets = stats.opackets;
 
                 const double rx_data_rate = (static_cast<double>((stats.ibytes - last_rx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
@@ -328,26 +344,29 @@ int get_and_print_nic_statistics(void *param)
                 std::cout << std::endl;
                 std::cout << "Receive  data rate (mbps): " << rx_data_rate << std::endl;
                 std::cout << "Transmit data rate (mbps): " << tx_data_rate << std::endl;
-                std::cout << "Receive  packet rate (mpps): " << rx_packet_rate << std::endl;
-                std::cout << "Transmit packet rate (mpps): " << tx_packet_rate << std::endl;
+                std::cout << std::fixed << std::setprecision(1) << "Receive  packet rate (pps): " << rx_packet_rate << std::endl;
+                std::cout << std::fixed << std::setprecision(1) << "Transmit packet rate (pps): " << tx_packet_rate << std::endl;
                 std::cout << "----------------------------------------------" << std::endl;
                 std::cout << std::endl;
                 
                 std::cout << "Packet Reading Thread(s) Statistics" << std::endl;
                 std::cout << "----------------------------------------------" << std::endl;
-                for (uint16_t i = 0; i < MAX_ETH_RX_QUEUES; ++i) {
+                for (uint16_t i = 0; i < num_rx_queues; ++i) {
                     std::cout << "Rx queue: " << i << std::endl;
                     std::cout << "     Rx packets: " << packet_reading_thread_statistics[i].rx_packets.load(std::memory_order_relaxed) << std::endl;
-
-                    std::cout << "     Worker Tx packets: [ ";
-                    for (uint16_t j = 0; j < MAX_PACKET_PROCESSING_WORKER_COUNT; ++j) {
+		    std::cout << "     Rx (ipv4) packets: " << packet_reading_thread_statistics[i].ipv4_rx_packets.load(std::memory_order_relaxed) << std::endl;
+                    std::cout << "     Rx (ipv6) packets: " << packet_reading_thread_statistics[i].ipv6_rx_packets.load(std::memory_order_relaxed) << std::endl;
+		    std::cout << "     ACL classify failures: " << packet_reading_thread_statistics[i].acl_classify_failures.load(std::memory_order_relaxed) << std::endl;
+		    
+		    std::cout << "     Worker Tx packets: [ ";
+                    for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
                         std::cout << packet_reading_thread_statistics[i].worker_tx_packets[j].load(std::memory_order_relaxed);
                         std::cout << " ";
                     }
                     std::cout << "]" << std::endl;
 
                     std::cout << "     Worker Tx drop packets: [ ";
-                    for (uint16_t j = 0; j < MAX_PACKET_PROCESSING_WORKER_COUNT; ++j) {
+                    for (uint16_t j = 0; j < num_packet_processing_workers; ++j) {
                         std::cout << packet_reading_thread_statistics[i].worker_tx_drop_packets[j].load(std::memory_order_relaxed);
                         std::cout << " ";
                     }
@@ -364,6 +383,7 @@ int get_and_print_nic_statistics(void *param)
         std::this_thread::sleep_for(50ms);
     }
 
+    delete statisticsThreadParams;
     return 0;
 }
 
@@ -409,6 +429,40 @@ void cleanup(const uint16_t port_id, const uint16_t num_rx_queues, const uint16_
     rte_eal_cleanup();
 }
 
+bool check_supported_packet_types(const int target_port_id)
+{
+	uint32_t mask = (RTE_PTYPE_L3_MASK | RTE_PTYPE_L4_MASK | RTE_PTYPE_TUNNEL_MASK);
+	int nb_ptypes = rte_eth_dev_get_supported_ptypes(target_port_id, mask, NULL, 0);
+
+	if (nb_ptypes <= 0) {
+		std::cerr << "Unable to check supported packet types. Return code: " << nb_ptypes << std::endl;
+		return false;
+	}
+
+	uint32_t ptypes[nb_ptypes];
+	nb_ptypes = rte_eth_dev_get_supported_ptypes(target_port_id, mask, ptypes, nb_ptypes);
+	
+	for (int i = 0; i < nb_ptypes; ++i) {
+		if (RTE_ETH_IS_IPV4_HDR(ptypes[i])) {
+			std::cout << "Packet type L3_IPV4 supported. " << std::endl;
+		}
+		if (RTE_ETH_IS_IPV6_HDR(ptypes[i])) {
+			std::cout << "Packet type L3_IPV6 supported. " << std::endl;
+		}
+		if ((ptypes[i] & RTE_PTYPE_TUNNEL_MASK) == RTE_PTYPE_TUNNEL_ESP) {
+			std::cout << "Packet type TUNNEL_ESP supported. " << std::endl;
+		}
+		if ((ptypes[i] & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_UDP) {
+			std::cout << "Packet type L4_UDP supported. " << std::endl;
+		}
+		if ((ptypes[i] & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_TCP) {
+			std::cout << "Packet type L4_TCP supported. " << std::endl;
+		}
+	}
+
+	return true;
+}
+
 int main(int argc, char **argv)
 {
     // Setting up signals to catch TERM and INT signal.
@@ -450,7 +504,7 @@ int main(int argc, char **argv)
     argv += return_val;
 
     // Application input parameters. (Will be passed from command line in the future.)
-    const std::string target_port = "0000:00:08.0"; //"0000:04:00.1";
+    const std::string target_port = "0000:04:00.1";
     const uint16_t num_rx_queues = 2;
     const uint16_t num_tx_queues = 0;
     const uint16_t num_packet_processing_workers = 1;
@@ -777,6 +831,10 @@ int main(int argc, char **argv)
         std::cout << "Key key: " << rss_conf.rss_key << std::endl;
     }*/
 
+    // Checking the packet types parsing supported by the NIC.
+    	check_supported_packet_types(target_port_id);
+    //
+
     uint16_t lcoreIdx = 1;    
     // Initiating the packet reading and processing routines on the logical cores.
     for (uint16_t i = 0; i < num_rx_queues; ++i) {
@@ -811,8 +869,13 @@ int main(int argc, char **argv)
         }
     }
 
+    auto statisticsThreadParams = new StatisticsThreadParams;
+    statisticsThreadParams->port_id = target_port_id;
+    statisticsThreadParams->num_rx_queues = num_rx_queues;
+    statisticsThreadParams->num_packet_processing_workers = num_packet_processing_workers;
+
     // Logical core 0 will be displaying the statistics.
-    get_and_print_nic_statistics(reinterpret_cast<void *>(&target_port_id));  
+    get_and_print_nic_statistics(reinterpret_cast<void *>(statisticsThreadParams));  
 
     // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit the application.
     for (uint16_t i = 1; i < logicalCores.size(); ++i) {
