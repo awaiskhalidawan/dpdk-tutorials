@@ -24,8 +24,8 @@ void rule_manager::cleanup() {
 
     for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
         for (uint16_t i = 0; i < num_queues; ++i) {
-            rte_acl_free(acl_ctx_info[port_id][i].acl_ctx_data_plane);
-            rte_acl_free(acl_ctx_info[port_id][i].acl_ctx_rule_manager);
+            rte_acl_free(acl_ctx_info_ipv4[port_id][i].acl_ctx_data_plane);
+            rte_acl_free(acl_ctx_info_ipv4[port_id][i].acl_ctx_rule_manager);
         }
     }
 }
@@ -77,7 +77,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
                     previous_rule_id = rule_id;
-                    rule.data.userdata = rule_id & 0xFFFF;
+                    rule.data.userdata = (rule_id & 0xFFFF);
                 } else if (*iter == "pri") {
                     if (++iter == tokens.end()) {
                         std::cerr << "Invalid rule priority format. " << std::endl;
@@ -89,7 +89,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
                     rule.data.priority = rule_pri;
-                    rule.data.category_mask = 1 << CATEGORY_0;
+                    rule.data.category_mask = (1 << CATEGORY_0);
                 } else if (*iter == "proto" || *iter == "sport" || *iter == "dport") {
                     const std::string current_token = *iter;
                     if (++iter == tokens.end()) {
@@ -184,7 +184,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                     rte_acl_free(acl_ctx);
                     return false;
                 }
-                acl_ctx_info[port_id][i].acl_ctx_data_plane = acl_ctx;
+                acl_ctx_info_ipv4[port_id][i].acl_ctx_data_plane = acl_ctx;
                 acl_ctx = nullptr;
 
                 acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_rm";
@@ -200,7 +200,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                     rte_acl_free(acl_ctx);
                     return false;
                 }
-                acl_ctx_info[port_id][i].acl_ctx_rule_manager = acl_ctx;
+                acl_ctx_info_ipv4[port_id][i].acl_ctx_rule_manager = acl_ctx;
                 acl_ctx = nullptr;
 
                 std::memset(&acl_build_param, 0x00, sizeof(acl_build_param));
@@ -208,13 +208,13 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                 acl_build_param.num_fields = RTE_DIM(ipv4_defs);
                 std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
 
-                return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_data_plane, &acl_build_param);
+                return_val = rte_acl_build(acl_ctx_info_ipv4[port_id][i].acl_ctx_data_plane, &acl_build_param);
                 if (return_val != 0) {
                     std::cerr << "Unable to build ACL context. Return value: " << return_val << std::endl;
                     return false;
                 }
 
-                return_val = rte_acl_build(acl_ctx_info[port_id][i].acl_ctx_rule_manager, &acl_build_param);
+                return_val = rte_acl_build(acl_ctx_info_ipv4[port_id][i].acl_ctx_rule_manager, &acl_build_param);
                 if (return_val != 0) {
                     std::cerr << "Unable to build ACL context. Return val: " << return_val << std::endl;
                     return false;
@@ -226,11 +226,43 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
     }
 
     is_initialized = true;
+
+    /*// Perform classification test.
+    uint8_t start_idx = 9;
+    uint8_t data[100] = {0};
+    uint32_t src_ip = rte_cpu_to_be_32(RTE_IPV4(192,168,1,1));
+    uint32_t dst_ip = rte_cpu_to_be_32(RTE_IPV4(192,168,1,2));
+    uint16_t src_port = rte_cpu_to_be_16(5061);
+    uint16_t dst_port = rte_cpu_to_be_16(5061);
+
+    data[start_idx + 0] = 17;    
+    std::memcpy(&data[start_idx + 3], &src_ip, sizeof(src_ip));
+    std::memcpy(&data[start_idx + 7], &dst_ip, sizeof(dst_ip));
+    std::memcpy(&data[start_idx + 11], &src_port, sizeof(src_port));
+    std::memcpy(&data[start_idx + 13], &dst_port, sizeof(dst_port));
+
+    ipv4_5tuple packet {
+        .proto = 17,
+        .ip_src = rte_cpu_to_be_32(RTE_IPV4(192,168,1,1)),
+        .ip_dst = rte_cpu_to_be_32(RTE_IPV4(192,168,1,2)),
+        .port_src = rte_cpu_to_be_16(5060),
+        .port_dst = rte_cpu_to_be_16(5061)
+    };
+
+    const uint8_t *inputs[] = {
+        (const uint8_t *)data
+    };
+    uint32_t results[1 * 1] = {0};
+
+    int return_val = rte_acl_classify(acl_ctx_info[0][0].acl_ctx_rule_manager, inputs, results, 1, 1);
+    printf("rte_acl_classify completed. Return value: %d \n", return_val);
+    //*/
+
     return true;
 }
 
-rte_acl_ctx* rule_manager::get_data_plane_acl_ctx(const uint32_t port_id, const uint32_t queue_id) {
-    acl_context_info &acl_ctx = acl_ctx_info[port_id][queue_id];
+rte_acl_ctx* rule_manager::get_data_plane_acl_ctx_ipv4(const uint32_t port_id, const uint32_t queue_id) {
+    acl_context_info &acl_ctx = acl_ctx_info_ipv4[port_id][queue_id];
 
     if (acl_ctx.is_acl_ctx_rule_manager_updated.load(std::memory_order_relaxed)) {
         // The ACL context is updated by rule manager. Swap the data plane acl context with rule manager act context.

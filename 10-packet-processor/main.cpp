@@ -33,8 +33,14 @@
 #include <iomanip>
 #include <cstring>
 #include <array>
+#include <utility>
 #include <packet_dumper.hpp>
 #include <rule_manager.hpp>
+
+#define ATOMIC_INCREAMENT_RELAXED(a, val) \
+    do {                                  \
+        a.store((a.load(std::memory_order_relaxed) + val), std::memory_order_relaxed); \
+    } while(0);
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
@@ -74,6 +80,8 @@ static const struct rte_mbuf_dynfield timestamp_dynfield_descriptor = {
 struct PacketReadingThreadStatistics 
 {
     std::atomic<uint64_t> rx_packets {0};
+    std::atomic<uint64_t> unknown_type_rx_packets {0};
+    std::atomic<uint64_t> acl_classify_failures {0};
     std::atomic<uint64_t> worker_tx_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
     std::atomic<uint64_t> worker_tx_drop_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
 };
@@ -159,6 +167,14 @@ int read_packets(void *param)
     const uint16_t num_packet_processing_workers = params->num_packet_processing_workers;
     const int32_t timestamp_dynfield_offset = params->timestamp_dynfield_offset;
 
+    auto &rule_manager = rule_manager::get_instance();
+    auto ipv4_acl_ctx = rule_manager.get_data_plane_acl_ctx_ipv4(port_id, queue_id);
+
+    if (!ipv4_acl_ctx) {
+        std::cerr << "ACL context ipv4 is not valid. Cannot continue. " << std::endl;
+        return -1;
+    }
+
     printf("Starting packet reading routine. Port Id: %u  Queue Id: %u  Logical core id (CPU Id): %d  Packet processing workers count: %u \n", 
             port_id, queue_id, rte_lcore_id(), num_packet_processing_workers);
 
@@ -178,8 +194,18 @@ int read_packets(void *param)
     }
 
     rte_mbuf *rx_packets[RX_BURST_SIZE] = {nullptr};
+    rte_mbuf *ipv4_rx_packets[RX_BURST_SIZE] = {nullptr};
+    rte_mbuf *ipv6_rx_packets[RX_BURST_SIZE] = {nullptr};
     uint64_t rx_count = 0;
     uint64_t ring_enqueue_count = 0;
+    uint16_t ipv4_rx_packet_count {0};
+    uint16_t ipv6_rx_packet_count {0};
+    const uint8_t *ipv4_acl_inputs[RX_BURST_SIZE] = {nullptr};
+    const uint8_t *ipv6_acl_inputs[RX_BURST_SIZE] = {nullptr};
+    uint32_t ipv4_acl_results[RX_BURST_SIZE * DEFAULT_MAX_CATEGORIES] = {0};
+    uint32_t ipv6_acl_results[RX_BURST_SIZE * DEFAULT_MAX_CATEGORIES] = {0};
+
+    uint16_t unknown_type_rx_packet_count {0};
     timespec ts {0};
 
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
@@ -193,35 +219,56 @@ int read_packets(void *param)
         }
         
         // Timestamp the packets.
-        clock_gettime(CLOCK_REALTIME, &ts);
+        /*clock_gettime(CLOCK_REALTIME, &ts);
         const uint64_t timestamp = (ts.tv_sec * 1000000000) + ts.tv_nsec;
         for (uint16_t i = 0; i < rx_count; ++i) {
             *(RTE_MBUF_DYNFIELD(rx_packets[i], timestamp_dynfield_offset, uint64_t *)) = timestamp;
-        }        
+        }*/
 
         // Update the statistics.
-        packet_reading_thread_statistics[queue_id].rx_packets.store(
-            (packet_reading_thread_statistics[queue_id].rx_packets.load(std::memory_order_relaxed) + rx_count), 
-            std::memory_order_relaxed);
+        ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].rx_packets, rx_count);
 
-        for (uint16_t i = 0; i < num_packet_processing_workers; ++i) {
+        ipv4_rx_packet_count = ipv6_rx_packet_count = unknown_type_rx_packet_count = 0;
+        for (uint16_t i = 0; i < rx_count; ++i) {
+            /*if (rx_packets[i]->packet_type) {
+                ipv4_rx_packets[ipv4_rx_packet_count++] = std::exchange(rx_packets[i], nullptr);
+            } else if (rx_packets[i]->packet_type == 1) {
+                ipv6_rx_packets[ipv6_rx_packet_count++] = std::exchange(rx_packets[i], nullptr);
+            } else {
+                ++unknown_type_rx_packet_count;
+            }*/
+
+            printf("Packet received with type: %d len: %d \n", rx_packets[i]->packet_type, rx_packets[i]->data_len);
+        }
+
+        ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].unknown_type_rx_packets, unknown_type_rx_packet_count);
+
+        // Free the received packets which are not identified.
+        rte_pktmbuf_free_bulk(rx_packets, rx_count);
+
+        /*for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
+            ipv4_acl_inputs[i] = rte_pktmbuf_mtod(ipv4_rx_packets[i], uint8_t *) + sizeof(rte_ether_hdr) + offsetof(rte_ipv4_hdr, next_proto_id);
+        }
+
+        int return_val = rte_acl_classify(ipv4_acl_ctx, ipv4_acl_inputs, ipv4_acl_results, ipv4_rx_packet_count, DEFAULT_MAX_CATEGORIES);
+        if (unlikely(return_val)) {
+            ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, !!return_val);
+        }*/
+
+        /*for (uint16_t i = 0; i < num_packet_processing_workers; ++i) {
             ring_enqueue_count = rte_ring_enqueue_burst(ring_buffers[i], reinterpret_cast<void *const *>(rx_packets), rx_count, nullptr);
             
             // Update the statistics.
-            packet_reading_thread_statistics[queue_id].worker_tx_packets[i].store(
-                (packet_reading_thread_statistics[queue_id].worker_tx_packets[i].load(std::memory_order_relaxed) + ring_enqueue_count), 
-                std::memory_order_relaxed);
+            ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].worker_tx_packets[i], ring_enqueue_count);
 
             // Free up the packets in bulk which are unable to enqueued on the ring buffer.
             if (ring_enqueue_count < rx_count) {
                 rte_pktmbuf_free_bulk(&rx_packets[ring_enqueue_count], (rx_count - ring_enqueue_count));
  
                 // Update the statistics.
-                packet_reading_thread_statistics[queue_id].worker_tx_drop_packets[i].store(
-                    (packet_reading_thread_statistics[queue_id].worker_tx_drop_packets[i].load(std::memory_order_relaxed) + (rx_count - ring_enqueue_count)), 
-                    std::memory_order_relaxed);
+                ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].worker_tx_drop_packets[i], (rx_count - ring_enqueue_count));
             }
-        }
+        }*/
     }
     
     std::cout << "Exiting packet reading routine. " << std::endl;

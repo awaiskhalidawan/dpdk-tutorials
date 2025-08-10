@@ -6,8 +6,9 @@
 #include <common.hpp>
 #include <vector>
 #include <spin_lock.hpp>
+#include <rte_ip4.h>
 
-static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
+static const std::string RULE_STORAGE_FILE_PATH = "/vm_share/rule_storage_file.txt";
 constexpr uint8_t CATEGORY_0 = 0;
 constexpr uint8_t DEFAULT_MAX_CATEGORIES = 1;
 
@@ -26,7 +27,7 @@ static struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint8_t),
         .field_index = 0,
         .input_index = 0,
-        .offset = offsetof (struct ipv4_5tuple, proto),
+        .offset = offsetof (struct rte_ipv4_hdr, next_proto_id),
     },
 
     /* next input field (IPv4 source address) - 4 consecutive bytes. */
@@ -35,7 +36,7 @@ static struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint32_t),
         .field_index = 1,
         .input_index = 1,
-        .offset = offsetof (struct ipv4_5tuple, ip_src),
+        .offset = offsetof (struct rte_ipv4_hdr, src_addr),
     },
 
     /* next input field (IPv4 destination address) - 4 consecutive bytes. */
@@ -44,7 +45,7 @@ static struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint32_t),
         .field_index = 2,
         .input_index = 2,
-        .offset = offsetof (struct ipv4_5tuple, ip_dst),
+        .offset = offsetof (struct rte_ipv4_hdr, dst_addr),
     },
 
     /*
@@ -56,7 +57,7 @@ static struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint16_t),
         .field_index = 3,
         .input_index = 3,
-        .offset = offsetof (struct ipv4_5tuple, port_src),
+        .offset = offsetof (struct rte_ipv4_hdr, dst_addr) + sizeof(uint32_t),
     },
 
     {
@@ -64,7 +65,7 @@ static struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint16_t),
         .field_index = 4,
         .input_index = 3,
-        .offset = offsetof (struct ipv4_5tuple, port_dst),
+        .offset = offsetof (struct rte_ipv4_hdr, dst_addr) + sizeof(uint32_t) + sizeof(uint16_t),
     },
 };
 
@@ -94,9 +95,9 @@ public:
 
     void cleanup();
 
-    rte_acl_ctx* get_data_plane_acl_ctx(const uint32_t port_id, const uint32_t queue_id);
+    rte_acl_ctx* get_data_plane_acl_ctx_ipv4(const uint32_t port_id, const uint32_t queue_id);
 	
-	acl_context_info acl_ctx_info[RTE_MAX_ETHPORTS][MAX_QUEUES];
+	acl_context_info acl_ctx_info_ipv4[RTE_MAX_ETHPORTS][MAX_QUEUES];
 
     std::list<std::pair<uint32_t, uint32_t>> port_and_queue_info_list;
 };
