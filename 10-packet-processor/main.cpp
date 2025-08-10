@@ -90,6 +90,8 @@ struct PacketReadingThreadStatistics
     std::atomic<uint64_t> unknown_type_rx_packets {0};
     std::atomic<uint64_t> ipv4_rx_packets {0};
     std::atomic<uint64_t> ipv6_rx_packets {0};
+    std::atomic<uint64_t> ipv4_classified_packets{0};
+    std::atomic<uint64_t> ipv6_classified_packets{0};
     std::atomic<uint64_t> acl_classify_failures {0};
     std::atomic<uint64_t> worker_tx_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
     std::atomic<uint64_t> worker_tx_drop_packets[MAX_PACKET_PROCESSING_WORKER_COUNT] {0};
@@ -213,8 +215,9 @@ int read_packets(void *param)
     const uint8_t *ipv6_acl_inputs[RX_BURST_SIZE] = {nullptr};
     uint32_t ipv4_acl_results[RX_BURST_SIZE * DEFAULT_MAX_CATEGORIES] = {0};
     uint32_t ipv6_acl_results[RX_BURST_SIZE * DEFAULT_MAX_CATEGORIES] = {0};
-
     uint16_t unknown_type_rx_packet_count {0};
+    uint16_t ipv4_classified_packet_count {0};
+    uint16_t ipv6_classified_packet_count {0};
     timespec ts {0};
 
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
@@ -238,6 +241,8 @@ int read_packets(void *param)
         ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].rx_packets, rx_count);
 
         ipv4_rx_packet_count = ipv6_rx_packet_count = unknown_type_rx_packet_count = 0;
+	ipv4_classified_packet_count = ipv6_classified_packet_count = 0;
+
         for (uint16_t i = 0; i < rx_count; ++i) {
             if (rx_packets[i]->packet_type & RTE_PTYPE_L3_IPV4 == RTE_PTYPE_L3_IPV4) {
                 ipv4_rx_packets[ipv4_rx_packet_count++] = std::exchange(rx_packets[i], nullptr);
@@ -256,13 +261,20 @@ int read_packets(void *param)
         rte_pktmbuf_free_bulk(rx_packets, rx_count);
 
         for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
-            ipv4_acl_inputs[i] = rte_pktmbuf_mtod(ipv4_rx_packets[i], uint8_t *) + sizeof(rte_ether_hdr) + offsetof(rte_ipv4_hdr, next_proto_id);
+            ipv4_acl_inputs[i] = rte_pktmbuf_mtod(ipv4_rx_packets[i], uint8_t *) + sizeof(rte_ether_hdr);
         }
 
         int return_val = rte_acl_classify(ipv4_acl_ctx, ipv4_acl_inputs, ipv4_acl_results, ipv4_rx_packet_count, DEFAULT_MAX_CATEGORIES);
-        if (unlikely(return_val)) {
-            ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, 1);
-        }
+        if (likely(!return_val)) {
+	    for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
+	        if (ipv4_acl_results[i]) {
+		    ++ipv4_classified_packet_count;
+	        }
+	    }
+	    ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv4_classified_packets, ipv4_classified_packet_count);
+	} else {
+	    ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, 1);
+	}
 
 	rte_pktmbuf_free_bulk(ipv4_rx_packets, ipv4_rx_packet_count);
         rte_pktmbuf_free_bulk(ipv6_rx_packets, ipv6_rx_packet_count);
@@ -356,6 +368,8 @@ int get_and_print_nic_statistics(void *param)
                     std::cout << "     Rx packets: " << packet_reading_thread_statistics[i].rx_packets.load(std::memory_order_relaxed) << std::endl;
 		    std::cout << "     Rx (ipv4) packets: " << packet_reading_thread_statistics[i].ipv4_rx_packets.load(std::memory_order_relaxed) << std::endl;
                     std::cout << "     Rx (ipv6) packets: " << packet_reading_thread_statistics[i].ipv6_rx_packets.load(std::memory_order_relaxed) << std::endl;
+		    std::cout << "     Classified (ipv4) packets: " << packet_reading_thread_statistics[i].ipv4_classified_packets.load(std::memory_order_relaxed) << std::endl;
+                    std::cout << "     Classified (ipv6) packets: " << packet_reading_thread_statistics[i].ipv6_classified_packets.load(std::memory_order_relaxed) << std::endl;
 		    std::cout << "     ACL classify failures: " << packet_reading_thread_statistics[i].acl_classify_failures.load(std::memory_order_relaxed) << std::endl;
 		    
 		    std::cout << "     Worker Tx packets: [ ";
