@@ -77,7 +77,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
                     previous_rule_id = rule_id;
-                    rule.data.userdata = (rule_id & 0xFFFF);
+                    rule.data.userdata = rule_id;
                 } else if (*iter == "pri") {
                     if (++iter == tokens.end()) {
                         std::cerr << "Invalid rule priority format. " << std::endl;
