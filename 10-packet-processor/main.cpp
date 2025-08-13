@@ -50,9 +50,9 @@ constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 4;           // Max pack
 constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS           = 1024;        // Number of descriptors configured for Rx queue.
 constexpr uint32_t MAX_ETH_RX_QUEUES                  = 4;           // Max number of Rx queues configured for ethernet port.
 constexpr uint32_t MAX_PCAP_DUMP_FILE_SIZE_MB         = 200;         // Maximum size of pcap dump file in MB.
+constexpr uint32_t ACL_CONTEXT_UPDATE_CHECK_TIME_MS   = 3000;	     // Time after which data plane thread will check for acl context updates.
 static const std::string MEMORY_POOL_NAME_PREFIX      = "mempool_";       // Prefix name of memory pool.
 static const std::string RING_BUFFER_NAME_PREFIX      = "ring_buffer_";   // Ring buffer name prefix.
-
 
 static std::atomic<bool> exit_indicator = false;
 
@@ -219,10 +219,18 @@ int read_packets(void *param)
     uint16_t ipv4_classified_packet_count {0};
     uint16_t ipv6_classified_packet_count {0};
     timespec ts {0};
+    auto tp0 = std::chrono::high_resolution_clock::now();
 
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
     while (!exit_indicator.load(std::memory_order_relaxed)) {
-        // Read the packets from interface in bursts.
+	// Check for ACL context updates periodically.
+	auto tp1 = std::chrono::high_resolution_clock::now();
+	if (std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() >= ACL_CONTEXT_UPDATE_CHECK_TIME_MS) {
+	    ipv4_acl_ctx = rule_manager.get_data_plane_acl_ctx_ipv4(port_id, queue_id);
+	    tp0 = tp1;
+	}
+	    
+	// Read the packets from interface in bursts.
         rx_count = rte_eth_rx_burst(port_id, queue_id, rx_packets, RX_BURST_SIZE);
 
         if (rx_count == 0) {
@@ -519,7 +527,7 @@ int main(int argc, char **argv)
 
     // Application input parameters. (Will be passed from command line in the future.)
     const std::string target_port = "0000:04:00.1";
-    const uint16_t num_rx_queues = 2;
+    const uint16_t num_rx_queues = 1;
     const uint16_t num_tx_queues = 0;
     const uint16_t num_packet_processing_workers = 1;
 

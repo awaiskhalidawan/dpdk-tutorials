@@ -7,18 +7,11 @@
 #include <vector>
 #include <spin_lock.hpp>
 #include <rte_ip4.h>
+#include <unordered_map>
 
 static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
 constexpr uint8_t CATEGORY_0 = 0;
 constexpr uint8_t DEFAULT_MAX_CATEGORIES = 1;
-
-struct ipv4_5tuple {
-    uint8_t proto      {0};
-    uint32_t ip_src    {0};      
-    uint32_t ip_dst    {0};
-    uint16_t port_src  {0};
-    uint16_t port_dst  {0};
-};
 
 static struct rte_acl_field_def ipv4_defs[5] = {
     /* first input field - always one byte long. */
@@ -86,6 +79,11 @@ private:
     std::vector<acl4_rule> acl4_rules;
 	
     bool is_initialized {false};
+
+    std::unordered_map<uint64_t, acl4_rule> map_rule_id_vs_acl4_rule;
+
+    uint64_t current_rule_id {0};
+
 public:
 	static rule_manager& get_instance();
 	

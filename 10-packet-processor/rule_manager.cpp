@@ -6,7 +6,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 
-rule_manager::rule_manager() : is_initialized(false) {
+rule_manager::rule_manager() : is_initialized(false), current_rule_id(0) {
 
 }
 
@@ -53,14 +53,20 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
         }
 
         std::string line;
-        int32_t previous_rule_id = -1;
         while (std::getline(rule_storage_file, line)) {
             // Process each line entry in rule storage file.
             std::cout << "Processing rule: " << line << std::endl;
             const auto tokens = util::tokenize_string(line, ' ');
 
             // Create a new rule in the rule list.
-            auto &rule = acl4_rules.emplace_back(acl4_rule());
+	    auto result = map_rule_id_vs_acl4_rule.emplace(current_rule_id++, acl4_rule());
+	    if (!result.second) {
+		std::cerr << "Unable to insert rule object in the acl4 rule map. " << std::endl;
+		return false;
+	    }
+
+	    auto &rule = result.first->second;
+	    //auto &rule = acl4_rules.emplace_back(acl4_rule());
             std::memset(&rule, 0x00, sizeof(rule));
 
             for (auto iter = tokens.begin(); iter != tokens.end(); ) {
@@ -72,12 +78,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                         return false;
                     }
 
-                    if (rule_id <= previous_rule_id) {
-                        std::cerr << "Incorrect/duplicate rule id found. " << std::endl;
-                        return false;
-                    }
-                    previous_rule_id = rule_id;
-                    rule.data.userdata = rule_id;
+                    rule.data.userdata = 0xDEADFEED;
                 } else if (*iter == "pri") {
                     if (++iter == tokens.end()) {
                         std::cerr << "Invalid rule priority format. " << std::endl;
@@ -160,6 +161,15 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
             }
         }
 
+	const auto tp0 = std::chrono::high_resolution_clock::now();
+	acl4_rules.clear();
+	acl4_rules.resize(map_rule_id_vs_acl4_rule.size());
+	uint32_t count = 0;
+	for (const auto &kv : map_rule_id_vs_acl4_rule) {
+		acl4_rules[count++] = kv.second;
+	}
+
+	const auto tp1 = std::chrono::high_resolution_clock::now();
         rte_acl_param acl_param {0};          
         rte_acl_config acl_build_param {0};
         rte_acl_ctx *acl_ctx {nullptr};
@@ -167,7 +177,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
         for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
             for (uint16_t i = 0; i < num_queues; ++i) {
                 std::memset(&acl_param, 0x00, sizeof(acl_param));
-                std::string acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_dp";
+                std::string acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_dataplane";
                 acl_param.name = acl_ctx_name.c_str();
                 acl_param.socket_id = rte_socket_id();
                 acl_param.rule_size = RTE_ACL_RULE_SZ(RTE_DIM(ipv4_defs));
@@ -187,7 +197,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
                 acl_ctx_info_ipv4[port_id][i].acl_ctx_data_plane = acl_ctx;
                 acl_ctx = nullptr;
 
-                acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_rm";
+                acl_ctx_name = "acl_ctx_" + std::to_string(port_id) + "_" + std::to_string(i) + "_rule_manager";
                 acl_param.name = acl_ctx_name.c_str();
                 acl_ctx = rte_acl_create(&acl_param);
                 if (!acl_ctx) {
@@ -210,18 +220,24 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
 
                 return_val = rte_acl_build(acl_ctx_info_ipv4[port_id][i].acl_ctx_data_plane, &acl_build_param);
                 if (return_val != 0) {
-                    std::cerr << "Unable to build ACL context. Return value: " << return_val << std::endl;
+                    std::cerr << "Unable to build data plance acl context. Return value: " << return_val << std::endl;
                     return false;
                 }
 
                 return_val = rte_acl_build(acl_ctx_info_ipv4[port_id][i].acl_ctx_rule_manager, &acl_build_param);
                 if (return_val != 0) {
-                    std::cerr << "Unable to build ACL context. Return val: " << return_val << std::endl;
+                    std::cerr << "Unable to build rule manager acl context. Return val: " << return_val << std::endl;
                     return false;
                 }
             }
-        }    
+        }
+    	const auto tp2 = std::chrono::high_resolution_clock::now();
+
+	std::cout << "Acl4 rules array creation time: " << std::chrono::duration_cast<std::chrono::microseconds>(tp1 - tp0).count() << std::endl;
+	std::cout << "Acl4 context (creation,rule_add,build) time: " << std::chrono::duration_cast<std::chrono::microseconds>(tp2 - tp1).count() << std::endl;
+	std::cout << "Total context creation time: " << std::chrono::duration_cast<std::chrono::microseconds>(tp2 - tp0).count() << std::endl;
     } else {
+	std::cerr << "Rule storage file not found: " << RULE_STORAGE_FILE_PATH << std::endl; 
         return false;
     }
 
@@ -240,14 +256,6 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
     std::memcpy(&data[start_idx + 7], &dst_ip, sizeof(dst_ip));
     std::memcpy(&data[start_idx + 11], &src_port, sizeof(src_port));
     std::memcpy(&data[start_idx + 13], &dst_port, sizeof(dst_port));
-
-    ipv4_5tuple packet {
-        .proto = 17,
-        .ip_src = rte_cpu_to_be_32(RTE_IPV4(192,168,1,1)),
-        .ip_dst = rte_cpu_to_be_32(RTE_IPV4(192,168,1,2)),
-        .port_src = rte_cpu_to_be_16(5060),
-        .port_dst = rte_cpu_to_be_16(5061)
-    };
 
     const uint8_t *inputs[] = {
         (const uint8_t *)data
