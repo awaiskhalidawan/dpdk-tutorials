@@ -94,6 +94,8 @@ public:
     void cleanup();
 
     rte_acl_ctx* get_data_plane_acl_ctx_ipv4(const uint32_t port_id, const uint32_t queue_id);
+
+    void check_and_update_acl_contexts();
 	
 	acl_context_info acl_ctx_info_ipv4[RTE_MAX_ETHPORTS][MAX_QUEUES];
 

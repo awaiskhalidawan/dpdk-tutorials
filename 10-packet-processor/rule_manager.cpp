@@ -283,4 +283,33 @@ rte_acl_ctx* rule_manager::get_data_plane_acl_ctx_ipv4(const uint32_t port_id, c
 
     return acl_ctx.acl_ctx_data_plane;
 }
-	
+
+void rule_manager::check_and_update_acl_contexts() {
+    
+    // Check for received rules and add them in to a list.
+    
+
+    // Check if the data plane contexts are yet to be updated or not.
+    bool is_acl_ctx_rule_manager_updated = false;
+    for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+        for (uint16_t i = 0; i < num_queues; ++i) {
+	    acl_context_info &acl_ctx = acl_ctx_info_ipv4[port_id][i];
+	    is_acl_ctx_rule_manager_updated = acl_ctx.is_acl_ctx_rule_manager_updated.load(std::memory_order_relaxed);
+	}
+    }
+
+    if (!is_acl_ctx_rule_manager_updated) {
+	acl4_rules.clear();
+        acl4_rules.resize(map_rule_id_vs_acl4_rule.size());
+        uint32_t count = 0;
+        for (const auto &kv : map_rule_id_vs_acl4_rule) {
+                acl4_rules[count++] = kv.second;
+        }
+
+	for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+            for (uint16_t i = 0; i < num_queues; ++i) {
+	    	
+	    }
+	}
+    }
+}
