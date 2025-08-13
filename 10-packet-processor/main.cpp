@@ -109,6 +109,8 @@ static rte_flow *flow {nullptr};
 void terminate(int signal) 
 {
     exit_indicator.store(true, std::memory_order_relaxed);
+    auto &rule_mgr = rule_manager::get_instance();
+    rule_mgr.stop();
 }
 
 int process_packets(void *param) 
@@ -170,21 +172,7 @@ int process_packets(void *param)
 int manage_acl_rules(void *param)
 {
     auto &rule_mgr = rule_manager::get_instance();
-
-    auto tp0 = std::chrono::high_resolution_clock::now();
-    while (!exit_indicator.load(std::memory_order_relaxed)) {
-	auto tp1 = std::chrono::high_resolution_clock::now();	
-	auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0);
-
-	if (diff.count() >= RULE_MANAGER_ACL_RULES_CHECK_TIME_MS) {
-	    tp0 = tp1;	
-	    rule_mgr.check_and_update_acl_contexts();
-	}
-
-	using namespace std::literals;	
-	std::this_thread::sleep_for(10ms);	
-    }
-
+    rule_mgr.check_and_update_acl_contexts();
     return 0;
 }
 

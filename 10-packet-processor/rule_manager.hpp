@@ -5,7 +5,6 @@
 #include <rte_acl.h>
 #include <common.hpp>
 #include <vector>
-#include <spin_lock.hpp>
 #include <rte_ip4.h>
 #include <unordered_map>
 
@@ -68,13 +67,12 @@ struct alignas(RTE_CACHE_LINE_SIZE) acl_context_info {
 	rte_acl_ctx *acl_ctx_data_plane {nullptr};
 	rte_acl_ctx *acl_ctx_rule_manager {nullptr};
 	std::atomic<bool> is_acl_ctx_rule_manager_updated {false};
-	spin_lock acl_ctx_lock;
 };
 
 
 class rule_manager {
 private:
-	rule_manager();
+    rule_manager();
 
     std::vector<acl4_rule> acl4_rules;
 	
@@ -86,20 +84,23 @@ private:
 
     uint64_t current_rule_id {0};
 
+    std::atomic<bool> exit_indicator {false};
 public:
-	static rule_manager& get_instance();
+    static rule_manager& get_instance();
 	
-	~rule_manager();
+    ~rule_manager();
 	
-	bool initialize(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info);
+    bool initialize(const std::list<std::pair<uint32_t, uint32_t>> &port_and_queue_info);
 
     void cleanup();
+
+    void stop();
 
     rte_acl_ctx* get_data_plane_acl_ctx_ipv4(const uint32_t port_id, const uint32_t queue_id);
 
     void check_and_update_acl_contexts();
 	
-	acl_context_info acl_ctx_info_ipv4[RTE_MAX_ETHPORTS][MAX_QUEUES];
+    acl_context_info acl_ctx_info_ipv4[RTE_MAX_ETHPORTS][MAX_QUEUES];
 
     std::list<std::pair<uint32_t, uint32_t>> port_and_queue_info_list;
 };
