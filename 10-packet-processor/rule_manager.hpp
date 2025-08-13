@@ -82,6 +82,8 @@ private:
 
     std::unordered_map<uint64_t, acl4_rule> map_rule_id_vs_acl4_rule;
 
+    bool is_acl4_map_updated {false};
+
     uint64_t current_rule_id {0};
 
 public:

@@ -50,7 +50,8 @@ constexpr uint32_t MAX_PACKET_PROCESSING_WORKER_COUNT = 4;           // Max pack
 constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS           = 1024;        // Number of descriptors configured for Rx queue.
 constexpr uint32_t MAX_ETH_RX_QUEUES                  = 4;           // Max number of Rx queues configured for ethernet port.
 constexpr uint32_t MAX_PCAP_DUMP_FILE_SIZE_MB         = 200;         // Maximum size of pcap dump file in MB.
-constexpr uint32_t ACL_CONTEXT_UPDATE_CHECK_TIME_MS   = 3000;	     // Time after which data plane thread will check for acl context updates.
+constexpr uint32_t DATA_PLANE_ACL_RULES_CHECK_TIME_MS   = 1000;	     // Data plane acl rules check interval in ms.
+constexpr uint32_t RULE_MANAGER_ACL_RULES_CHECK_TIME_MS = 1000;	     // Rule manager acl rules check interval in ms.
 static const std::string MEMORY_POOL_NAME_PREFIX      = "mempool_";       // Prefix name of memory pool.
 static const std::string RING_BUFFER_NAME_PREFIX      = "ring_buffer_";   // Ring buffer name prefix.
 
@@ -166,6 +167,27 @@ int process_packets(void *param)
     return 0;
 }
 
+int manage_acl_rules(void *param)
+{
+    auto &rule_mgr = rule_manager::get_instance();
+
+    auto tp0 = std::chrono::high_resolution_clock::now();
+    while (!exit_indicator.load(std::memory_order_relaxed)) {
+	auto tp1 = std::chrono::high_resolution_clock::now();	
+	auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0);
+
+	if (diff.count() >= RULE_MANAGER_ACL_RULES_CHECK_TIME_MS) {
+	    tp0 = tp1;	
+	    rule_mgr.check_and_update_acl_contexts();
+	}
+
+	using namespace std::literals;	
+	std::this_thread::sleep_for(10ms);	
+    }
+
+    return 0;
+}
+
 int read_packets(void *param)
 {
     if (!param) {
@@ -225,7 +247,7 @@ int read_packets(void *param)
     while (!exit_indicator.load(std::memory_order_relaxed)) {
 	// Check for ACL context updates periodically.
 	auto tp1 = std::chrono::high_resolution_clock::now();
-	if (std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() >= ACL_CONTEXT_UPDATE_CHECK_TIME_MS) {
+	if (std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() >= DATA_PLANE_ACL_RULES_CHECK_TIME_MS) {
 	    ipv4_acl_ctx = rule_manager.get_data_plane_acl_ctx_ipv4(port_id, queue_id);
 	    tp0 = tp1;
 	}
@@ -572,8 +594,8 @@ int main(int argc, char **argv)
     }
 
     // We need sufficient logical cores to run:
-    // - main thread, packet receiving thread(s) and packet processing thread(s).
-    const uint16_t num_required_logical_cores = 1 + num_rx_queues + (num_rx_queues * num_packet_processing_workers);
+    // - main thread, rule manager thread, packet receiving thread(s) and packet processing thread(s).
+    const uint16_t num_required_logical_cores = 1 + 1 + num_rx_queues + (num_rx_queues * num_packet_processing_workers);
     if (logicalCores.size() != num_required_logical_cores) {
         std::cerr << "Insufficient count of logical cores are provided. Required logical cores count: " << num_required_logical_cores << std::endl;
         rte_eal_cleanup();
@@ -890,6 +912,13 @@ int main(int argc, char **argv)
             lcoreIdx++;
         }
     }
+
+    if ((return_val = rte_eal_remote_launch(manage_acl_rules, nullptr, logicalCores[lcoreIdx])) != 0) {
+                std::cerr << "Unable to launch rule manager routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
+                cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+                exit(1);
+    }
+    lcoreIdx++;
 
     auto statisticsThreadParams = new StatisticsThreadParams;
     statisticsThreadParams->port_id = target_port_id;
