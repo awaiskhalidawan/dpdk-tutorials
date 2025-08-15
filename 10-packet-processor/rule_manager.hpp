@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <expected>
 
-static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
+static const std::string RULE_STORAGE_FILE_PATH = "/vm_share/rule_storage_file.txt";
 constexpr uint8_t CATEGORY_0 = 0;
 constexpr uint8_t DEFAULT_MAX_CATEGORIES = 1;
 

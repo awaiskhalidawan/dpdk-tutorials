@@ -37,19 +37,12 @@ void rule_manager::cleanup() {
 
 std::expected<acl4_rule, bool> rule_manager::parse_ipv4_rule(const std::string &rule_str) {
     acl4_rule rule = {0};
-    const auto tokens = util::tokenize_string(rule_str, ' ');
-    
-    for (auto iter = tokens.begin(); iter != tokens.end();) {
-        if (iter == tokens.begin()) {
-            // The first token must be the rule id.
-            const int32_t rule_id = util::string_to_int(*iter);
-            if (rule_id < 0) {
-                std::cerr << "Unable to parse rule id. " << std::endl;
-                return std::unexpected(false);
-            }
+    rule.data.userdata = 0xDEADFEED;
 
-            rule.data.userdata = 0xDEADFEED;
-        } else if (*iter == "pri") {
+    const auto tokens = util::tokenize_string(rule_str, ' ');
+
+    for (auto iter = tokens.begin(); iter != tokens.end();) {
+        if (*iter == "pri") {
             if (++iter == tokens.end()) {
                 std::cerr << "Invalid rule priority format. " << std::endl;
                 return std::unexpected(false);
@@ -176,12 +169,12 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
     }
 
     auto tp1 = std::chrono::high_resolution_clock::now();
-    std::cout << "Rules file reading time (ms): " << std::chrono::duration_cast<std::chrono::microseconds>(tp1 - tp0).count() << std::endl;
+    std::cout << "Rules file reading time (ms): " << std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() << std::endl;
 
     tp0 = std::chrono::high_resolution_clock::now();    
     for (const auto &rule_str : rules_list) {
         // Process each line entry in rule storage file.
-        std::cout << "Processing rule: " << rule_str << std::endl;
+        // std::cout << "Processing rule: " << rule_str << std::endl;
         
         auto parse_result = parse_ipv4_rule(rule_str);
         if (!parse_result.has_value()) {
@@ -196,7 +189,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
     }
 
     tp1 = std::chrono::high_resolution_clock::now();
-    std::cout << rules_list.size() << " rules parsing time (ms): " << std::chrono::duration_cast<std::chrono::microseconds>(tp1 - tp0).count() << std::endl;
+    std::cout << rules_list.size() << " rules parsing time (ms): " << std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() << std::endl;
     
     if (map_rule_id_vs_acl4_rule.size()) {
         tp0 = std::chrono::high_resolution_clock::now();
@@ -209,7 +202,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
         }
 
         tp1 = std::chrono::high_resolution_clock::now();
-        std::cout << "Rules array creation time (ms): " << std::chrono::duration_cast<std::chrono::microseconds>(tp1 - tp0).count() << std::endl;
+        std::cout << "Rules array creation time (ms): " << std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() << std::endl;
 
         tp0 = std::chrono::high_resolution_clock::now();        
         rte_acl_param acl_param{0};
@@ -275,7 +268,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
         }
         
         tp1 = std::chrono::high_resolution_clock::now();
-        std::cout << "Rules context creation time (ms): " << std::chrono::duration_cast<std::chrono::microseconds>(tp1 - tp0).count() << std::endl;
+        std::cout << "Rules context creation time (ms): " << std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() << std::endl;
     }
 
     is_initialized = true;
@@ -321,7 +314,6 @@ rte_acl_ctx* rule_manager::get_data_plane_acl_ctx_ipv4(const uint32_t port_id, c
 void rule_manager::check_and_update_acl_contexts() {
     while (!exit_indicator.load(std::memory_order_relaxed)) {
         // Check for received rules and add them in the map.
-        is_acl4_map_updated = false;
 
         // Check if the data plane contexts are yet to be updated or not.
         bool is_acl4_ctx_rule_manager_updated = false;
