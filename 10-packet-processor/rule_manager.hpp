@@ -7,6 +7,7 @@
 #include <vector>
 #include <rte_ip4.h>
 #include <unordered_map>
+#include <expected>
 
 static const std::string RULE_STORAGE_FILE_PATH = "/tmp/rule_storage_file.txt";
 constexpr uint8_t CATEGORY_0 = 0;
@@ -85,6 +86,9 @@ private:
     uint64_t current_rule_id {0};
 
     std::atomic<bool> exit_indicator {false};
+
+    std::expected<acl4_rule, bool> parse_ipv4_rule(const std::string &rule_str);
+
 public:
     static rule_manager& get_instance();
 	
