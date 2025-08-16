@@ -181,7 +181,7 @@ bool rule_manager::initialize(const std::list<std::pair<uint32_t, uint32_t>> &po
             return false;
         }
 
-        auto result = map_rule_id_vs_acl4_rule.emplace(current_rule_id++, parse_result.value());
+        auto result = map_rule_id_vs_acl4_rule.emplace(++current_rule_id, parse_result.value());
         if (!result.second) {
             std::cerr << "Unable to insert rule object in the acl4 rule map. " << std::endl;
             return false;
