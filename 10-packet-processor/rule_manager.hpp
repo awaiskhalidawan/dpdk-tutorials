@@ -81,7 +81,9 @@ private:
 
     std::unordered_map<uint64_t, acl4_rule> map_rule_id_vs_acl4_rule;
 
-    bool is_acl4_map_updated {false};
+    std::mutex mtx_map_rule_id_vs_acl4_rule;
+
+    std::atomic<uint64_t> map_rule_id_vs_acl4_rule_update_count {0};
 
     uint64_t current_rule_id {0};
 

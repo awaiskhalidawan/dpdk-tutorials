@@ -7,7 +7,8 @@
 #include <arpa/inet.h>
 #include <thread>
 
-rule_manager::rule_manager() : is_initialized(false), current_rule_id(0), exit_indicator(false) {
+rule_manager::rule_manager() : is_initialized(false), current_rule_id(0), exit_indicator(false),
+                               map_rule_id_vs_acl4_rule_update_count(0) {
 
 }
 
@@ -26,6 +27,7 @@ void rule_manager::stop() {
 
 void rule_manager::cleanup() {
     acl4_rules.clear();
+    map_rule_id_vs_acl4_rule.clear();
 
     for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
         for (uint16_t i = 0; i < num_queues; ++i) {
@@ -313,9 +315,7 @@ rte_acl_ctx* rule_manager::get_data_plane_acl_ctx_ipv4(const uint32_t port_id, c
 
 void rule_manager::check_and_update_acl_contexts() {
     while (!exit_indicator.load(std::memory_order_relaxed)) {
-        // Check for received rules and add them in the map.
-
-        // Check if the data plane contexts are yet to be updated or not.
+        // Check if the updated rule manager contexts are taken by data plane or not.
         bool is_acl4_ctx_rule_manager_updated = false;
         for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
             for (uint16_t i = 0; i < num_queues; ++i) {
@@ -326,51 +326,63 @@ void rule_manager::check_and_update_acl_contexts() {
             }
         }
 
-        if (!is_acl4_ctx_rule_manager_updated && is_acl4_map_updated) {
-            is_acl4_map_updated = false;
+        if (is_acl4_ctx_rule_manager_updated) {
+            // Data plane has not yet updated its own context with updated rule manager context.
+            using namespace std::literals;
+            std::this_thread::sleep_for(20ms);
+            continue;
+        }
 
-            acl4_rules.clear();
-            acl4_rules.resize(map_rule_id_vs_acl4_rule.size());
+        // Data plane and rule manager acl context are same. Check for any updates in acl rule map.
+        if (map_rule_id_vs_acl4_rule_update_count.load(std::memory_order_relaxed) == 0) {
+            using namespace std::literals;
+            std::this_thread::sleep_for(20ms);
+            continue;
+        }
+
+        ATOMIC_DECREMENT_RELAXED(map_rule_id_vs_acl4_rule_update_count, 1);
+
+        {
             uint64_t count = 0;
+            acl4_rules.clear();
+            std::lock_guard<std::mutex> lock(mtx_map_rule_id_vs_acl4_rule);
+            acl4_rules.resize(map_rule_id_vs_acl4_rule.size());
             for (const auto &kv : map_rule_id_vs_acl4_rule) {
                 acl4_rules[count++] = kv.second;
             }
+        }
 
-            rte_acl_config acl_build_param = {0};
-            std::memset(&acl_build_param, 0x00, sizeof(acl_build_param));
-            acl_build_param.num_categories = DEFAULT_MAX_CATEGORIES;
-            acl_build_param.num_fields = RTE_DIM(ipv4_defs);
-            std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
+        rte_acl_config acl_build_param = {0};
+        std::memset(&acl_build_param, 0x00, sizeof(acl_build_param));
+        acl_build_param.num_categories = DEFAULT_MAX_CATEGORIES;
+        acl_build_param.num_fields = RTE_DIM(ipv4_defs);
+        std::memcpy(&acl_build_param.defs, ipv4_defs, sizeof(ipv4_defs));
 
-            int return_val {0};
-            for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
-                for (uint16_t i = 0; i < num_queues; ++i) {
-                    rte_acl_ctx *acl_ctx = acl_ctx_info_ipv4[port_id][i].acl_ctx_rule_manager;
+        int return_val{0};
+        for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+            for (uint16_t i = 0; i < num_queues; ++i) {
+                rte_acl_ctx *acl_ctx = acl_ctx_info_ipv4[port_id][i].acl_ctx_rule_manager;
 
-                    rte_acl_reset(acl_ctx);
-                    if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
-                        std::cerr << "Unable to add rules to acl context. " << std::endl;
-                        continue;
-                    }
+                rte_acl_reset(acl_ctx);
+                if (rte_acl_add_rules(acl_ctx, reinterpret_cast<const rte_acl_rule *>(acl4_rules.data()), acl4_rules.size()) < 0) {
+                    std::cerr << "Unable to add rules to acl context. " << std::endl;
+                    continue;
+                }
 
-                    return_val = rte_acl_build(acl_ctx, &acl_build_param);
-                    if (return_val != 0) {
-                        std::cerr << "Unable to build rule manager acl context. Return value: " << return_val << std::endl;
-                        continue;
-                    }
+                return_val = rte_acl_build(acl_ctx, &acl_build_param);
+                if (return_val != 0) {
+                    std::cerr << "Unable to build rule manager acl context. Return value: " << return_val << std::endl;
+                    continue;
                 }
             }
+        }
 
-            // All the acl contexts are updated successfully. Set the flag to notify to data plane.
-            for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
-                for (uint16_t i = 0; i < num_queues; ++i) {
-                    acl_context_info &acl_ctx_info = acl_ctx_info_ipv4[port_id][i];
-                    acl_ctx_info.is_acl_ctx_rule_manager_updated.store(true, std::memory_order_relaxed);
-                }
+        // All the acl contexts are updated successfully. Set the flag to notify to data plane.
+        for (const auto [port_id, num_queues] : this->port_and_queue_info_list) {
+            for (uint16_t i = 0; i < num_queues; ++i) {
+                acl_context_info &acl_ctx_info = acl_ctx_info_ipv4[port_id][i];
+                acl_ctx_info.is_acl_ctx_rule_manager_updated.store(true, std::memory_order_relaxed);
             }
-        } else {
-            using namespace std::literals;
-            std::this_thread::sleep_for(50ms);
         }
     }
 

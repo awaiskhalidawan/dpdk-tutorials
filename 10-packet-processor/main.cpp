@@ -37,11 +37,6 @@
 #include <packet_dumper.hpp>
 #include <rule_manager.hpp>
 
-#define ATOMIC_INCREAMENT_RELAXED(a, val) \
-    do {                                  \
-        a.store((a.load(std::memory_order_relaxed) + val), std::memory_order_relaxed); \
-    } while(0);
-
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
 constexpr uint32_t RING_BUFFER_SIZE                   = 65536;       // Size of ring buffer.
@@ -233,14 +228,14 @@ int read_packets(void *param)
 
     // Now we go into a loop to continously check the port (ethernet interface) for any incoming packets. This process is called polling.
     while (!exit_indicator.load(std::memory_order_relaxed)) {
-	// Check for ACL context updates periodically.
-	auto tp1 = std::chrono::high_resolution_clock::now();
-	if (std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() >= DATA_PLANE_ACL_RULES_CHECK_TIME_MS) {
-	    ipv4_acl_ctx = rule_manager.get_data_plane_acl_ctx_ipv4(port_id, queue_id);
-	    tp0 = tp1;
-	}
+	    // Check for ACL context updates periodically.
+	    auto tp1 = std::chrono::high_resolution_clock::now();
+	    if (std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count() >= DATA_PLANE_ACL_RULES_CHECK_TIME_MS) {
+	        ipv4_acl_ctx = rule_manager.get_data_plane_acl_ctx_ipv4(port_id, queue_id);
+	        tp0 = tp1;
+	    }
 	    
-	// Read the packets from interface in bursts.
+	    // Read the packets from interface in bursts.
         rx_count = rte_eth_rx_burst(port_id, queue_id, rx_packets, RX_BURST_SIZE);
 
         if (rx_count == 0) {
@@ -256,10 +251,10 @@ int read_packets(void *param)
         }*/
 
         // Update the statistics.
-        ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].rx_packets, rx_count);
+        ATOMIC_INCREMENT_RELAXED(packet_reading_thread_statistics[queue_id].rx_packets, rx_count);
 
         ipv4_rx_packet_count = ipv6_rx_packet_count = unknown_type_rx_packet_count = 0;
-	ipv4_classified_packet_count = ipv6_classified_packet_count = 0;
+	    ipv4_classified_packet_count = ipv6_classified_packet_count = 0;
 
         for (uint16_t i = 0; i < rx_count; ++i) {
             if (rx_packets[i]->packet_type & RTE_PTYPE_L3_IPV4 == RTE_PTYPE_L3_IPV4) {
@@ -271,11 +266,11 @@ int read_packets(void *param)
             }
         }
 
-        ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].unknown_type_rx_packets, unknown_type_rx_packet_count);
-	ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv4_rx_packets, ipv4_rx_packet_count);
-        ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv6_rx_packets, ipv6_rx_packet_count);
+        ATOMIC_INCREMENT_RELAXED(packet_reading_thread_statistics[queue_id].unknown_type_rx_packets, unknown_type_rx_packet_count);
+	    ATOMIC_INCREMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv4_rx_packets, ipv4_rx_packet_count);
+        ATOMIC_INCREMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv6_rx_packets, ipv6_rx_packet_count);
 	
-	// Free the received packets which are not identified.
+	    // Free the received packets which are not identified.
         rte_pktmbuf_free_bulk(rx_packets, rx_count);
 
         for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
@@ -284,17 +279,17 @@ int read_packets(void *param)
 
         int return_val = rte_acl_classify(ipv4_acl_ctx, ipv4_acl_inputs, ipv4_acl_results, ipv4_rx_packet_count, DEFAULT_MAX_CATEGORIES);
         if (likely(!return_val)) {
-	    for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
-	        if (ipv4_acl_results[i]) {
-		    ++ipv4_classified_packet_count;
+	        for (uint16_t i = 0; i < ipv4_rx_packet_count; ++i) {
+	            if (ipv4_acl_results[i]) {
+		        ++ipv4_classified_packet_count;
+	            }
 	        }
+	        ATOMIC_INCREMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv4_classified_packets, ipv4_classified_packet_count);
+	    } else {
+	        ATOMIC_INCREMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, 1);
 	    }
-	    ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].ipv4_classified_packets, ipv4_classified_packet_count);
-	} else {
-	    ATOMIC_INCREAMENT_RELAXED(packet_reading_thread_statistics[queue_id].acl_classify_failures, 1);
-	}
 
-	rte_pktmbuf_free_bulk(ipv4_rx_packets, ipv4_rx_packet_count);
+	    rte_pktmbuf_free_bulk(ipv4_rx_packets, ipv4_rx_packet_count);
         rte_pktmbuf_free_bulk(ipv6_rx_packets, ipv6_rx_packet_count);
 
         /*for (uint16_t i = 0; i < num_packet_processing_workers; ++i) {
