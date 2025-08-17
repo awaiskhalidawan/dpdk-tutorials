@@ -1,8 +1,13 @@
 set(TARGET_NAME "packet-processor")
 
+find_package(Protobuf REQUIRED)
+
 add_executable(${TARGET_NAME}
   rule_manager.cpp
   main.cpp
+  rule_management_grpc_server/rule_messages.grpc.pb.cc
+  rule_management_grpc_server/rule_messages.pb.cc
+  rule_management_grpc_server/rule_management_server.cpp
 )
 
 include(../dpdk-tutorials.cmake)
@@ -20,4 +25,6 @@ target_link_libraries(${TARGET_NAME} PUBLIC
   -lrte_mbuf
   -lrte_ring
   -lrte_acl
+  -lgrpc++ 
+  protobuf::libprotobuf
 )

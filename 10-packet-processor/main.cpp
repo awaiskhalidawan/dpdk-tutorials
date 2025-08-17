@@ -36,6 +36,7 @@
 #include <utility>
 #include <packet_dumper.hpp>
 #include <rule_manager.hpp>
+#include <rule_management_grpc_server/rule_management_server.hpp>
 
 constexpr uint16_t NIC_STATISTICS_INTERVAL_MSEC       = 1000;        // 1 seconds.
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
@@ -106,6 +107,9 @@ void terminate(int signal)
     exit_indicator.store(true, std::memory_order_relaxed);
     auto &rule_mgr = rule_manager::get_instance();
     rule_mgr.stop();
+
+    auto &rule_mgmt_server = rule_management_server::get_instance();
+    rule_mgmt_server.stop();
 }
 
 int process_packets(void *param) 
@@ -168,6 +172,13 @@ int manage_acl_rules(void *param)
 {
     auto &rule_mgr = rule_manager::get_instance();
     rule_mgr.check_and_update_acl_contexts();
+    return 0;
+}
+
+int run_rule_management_server(void *param)
+{
+    auto &rule_mgmt_server = rule_management_server::get_instance();
+    rule_mgmt_server.start("0.0.0.0:50051");
     return 0;
 }
 
@@ -417,8 +428,8 @@ int get_and_print_nic_statistics(void *param)
 void cleanup(const uint16_t port_id, const uint16_t num_rx_queues, const uint16_t num_packet_processing_workers)
 {
     if (flow) {
-	rte_flow_error flow_error;
-	rte_flow_destroy(port_id, flow, &flow_error);
+	    rte_flow_error flow_error;
+	    rte_flow_destroy(port_id, flow, &flow_error);
     }
 
     rte_eth_dev_stop(port_id);
@@ -534,7 +545,7 @@ int main(int argc, char **argv)
     const std::string target_port = "0000:00:08.0"; //"0000:04:00.1"; // 0000:00:08.0
     const uint16_t num_rx_queues = 1;
     const uint16_t num_tx_queues = 0;
-    const uint16_t num_packet_processing_workers = 1;
+    const uint16_t num_packet_processing_workers = 0;
 
     // Check whether the target port is detected by the application.
     uint16_t target_port_id = std::numeric_limits<decltype(target_port_id)>::max();
@@ -570,15 +581,16 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    if ((num_packet_processing_workers == 0) || (num_packet_processing_workers > MAX_PACKET_PROCESSING_WORKER_COUNT)) {
+    if (/*(num_packet_processing_workers == 0) ||*/ (num_packet_processing_workers > MAX_PACKET_PROCESSING_WORKER_COUNT)) {
         std::cerr << "Invalid number of packet processing workers. Max workers allowed: " << MAX_PACKET_PROCESSING_WORKER_COUNT << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
     // We need sufficient logical cores to run:
-    // - main thread, rule manager thread, packet receiving thread(s) and packet processing thread(s).
-    const uint16_t num_required_logical_cores = 1 + 1 + num_rx_queues + (num_rx_queues * num_packet_processing_workers);
+    // - main thread, rule manager thread, rule management server thread, packet receiving thread(s) and 
+    //   packet processing thread(s).
+    const uint16_t num_required_logical_cores = 1 + 1 + 1 + num_rx_queues + (num_rx_queues * num_packet_processing_workers);
     if (logicalCores.size() != num_required_logical_cores) {
         std::cerr << "Insufficient count of logical cores are provided. Required logical cores count: " << num_required_logical_cores << std::endl;
         rte_eal_cleanup();
@@ -903,13 +915,20 @@ int main(int argc, char **argv)
     }
     lcoreIdx++;
 
+    if ((return_val = rte_eal_remote_launch(run_rule_management_server, nullptr, logicalCores[lcoreIdx])) != 0) {
+        std::cerr << "Unable to launch rule management routine on the logical core: %d. Return code: %d" << logicalCores[lcoreIdx] << return_val << std::endl;
+        cleanup(target_port_id, num_rx_queues, num_packet_processing_workers);
+        exit(1);
+    }
+    lcoreIdx++;
+
     auto statisticsThreadParams = new StatisticsThreadParams;
     statisticsThreadParams->port_id = target_port_id;
     statisticsThreadParams->num_rx_queues = num_rx_queues;
     statisticsThreadParams->num_packet_processing_workers = num_packet_processing_workers;
 
     // Logical core 0 will be displaying the statistics.
-    get_and_print_nic_statistics(reinterpret_cast<void *>(statisticsThreadParams));  
+    get_and_print_nic_statistics(reinterpret_cast<void *>(statisticsThreadParams));
 
     // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit the application.
     for (uint16_t i = 1; i < logicalCores.size(); ++i) {
