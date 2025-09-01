@@ -37,6 +37,12 @@ constexpr uint32_t MEMORY_POOL_SIZE = 65535;                    // Size of the m
 
 static std::atomic<bool> exit_indicator = false;
 
+struct PacketTransmissionThreadParams {
+    uint16_t port_id = std::numeric_limits<decltype(port_id)>::max();
+    uint16_t queue_id = std::numeric_limits<decltype(queue_id)>::max();
+    uint16_t packets_per_second = std::numeric_limits<decltype(packets_per_second)>::min();
+};
+
 void terminate(int signal) 
 {
     exit_indicator.store(true, std::memory_order_relaxed);
@@ -291,14 +297,14 @@ int get_and_print_nic_statistics(const uint16_t port_id)
 
         if (diff.count() >= NIC_STATISTICS_INTERVAL_MSEC) {
             t1 = t2;
-            //std::cout << "\033[2J\033[1;1H";
+            std::cout << "\033[2J\033[1;1H";
             if ((return_val = rte_eth_stats_get(port_id, &stats) == 0)) {
                 auto now = std::chrono::system_clock::now();
                 auto in_time_t = std::chrono::system_clock::to_time_t(now);
 
-                const double rx_packet_rate = (static_cast<double>(stats.ipackets - last_rx_packets) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+                const double rx_packet_rate = (static_cast<double>(stats.ipackets - last_rx_packets) / (static_cast<double>(diff.count()) / 1000.0));
                 last_rx_packets = stats.ipackets;
-                const double tx_packet_rate = (static_cast<double>(stats.opackets - last_tx_packets) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+                const double tx_packet_rate = (static_cast<double>(stats.opackets - last_tx_packets) / (static_cast<double>(diff.count()) / 1000.0));
                 last_tx_packets = stats.opackets;
 
                 const double rx_data_rate = (static_cast<double>((stats.ibytes - last_rx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
@@ -320,8 +326,8 @@ int get_and_print_nic_statistics(const uint16_t port_id)
                 std::cout << std::endl;
                 std::cout << "Receive  data rate (mbps): " << rx_data_rate << std::endl;
                 std::cout << "Transmit data rate (mbps): " << tx_data_rate << std::endl;
-                std::cout << "Receive  packet rate (mpps): " << rx_packet_rate << std::endl;
-                std::cout << "Transmit packet rate (mpps): " << tx_packet_rate << std::endl;
+                std::cout << std::fixed << std::setprecision(1) << "Receive  packet rate (pps): " << rx_packet_rate << std::endl;
+                std::cout << std::fixed << std::setprecision(1) << "Transmit packet rate (pps): " << tx_packet_rate << std::endl;
                 std::cout << "----------------------------------------------" << std::endl;
                 std::cout << std::endl;
             } else {
@@ -349,21 +355,18 @@ int transmit_packets_from_interface(void* param)
         return -1;
     }
 
-
-    const uint16_t port_id = (*static_cast<uint32_t *>(param)) >> 16;
-    const uint16_t queue_id = (*static_cast<uint32_t *>(param)) & 0xFFFF;
-    std::cout << "Starting packet transmission routine on logical core: " << rte_lcore_id() << " Port id: " << port_id << " Queue id: " << queue_id << std::endl;
-
-
+    PacketTransmissionThreadParams *packetTransmissionThreadParams = reinterpret_cast<PacketTransmissionThreadParams *>(param);
+    const uint16_t port_id = packetTransmissionThreadParams->port_id;
+    const uint16_t queue_id = packetTransmissionThreadParams->queue_id;
     const uint64_t packet_len = sizeof(rte_ether_hdr) + sizeof(rte_ipv4_hdr) + sizeof(rte_udp_hdr) + 172;
-    const uint64_t packets_per_second = 7000000;
+    const uint64_t packets_per_second = packetTransmissionThreadParams->packets_per_second;
     const uint64_t packet_tx_burst_size = 16;
     const uint64_t interburst_time_ns = (1 * 1000000000) / (packets_per_second / packet_tx_burst_size);
 
+    std::cout << "Starting packet transmission routine on logical core: " << rte_lcore_id() << " Port id: " << port_id << " Queue id: " << queue_id 
+              << " Packets per second: " << packets_per_second << std::endl;
     
-    //rte_mbuf *packet = nullptr;
     rte_mbuf *packets[packet_tx_burst_size];
-
     timespec ts {0};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t t0 = ts.tv_sec * 1000000000 + ts.tv_nsec;
@@ -410,7 +413,17 @@ int transmit_packets_from_interface(void* param)
         } while (tx_count < packet_tx_burst_size);
     }
 
+    delete packetTransmissionThreadParams;
     return 0;
+}
+
+void application_usage() {
+    std::cout << std::endl;
+    std::cout << "Application usage:" << std::endl;
+    std::cout << "------------------" << std::endl;
+    std::cout << "sudo ./packet-generator -l <cores_ids> -n 4 --file-prefix=packet-gen -b <port_id_to_skip> -- --output-port <output_port_id> "
+                 "--packets-per-second <packets_per_second>" << std::endl;
+    std::cout << "Example: sudo ./packet-generator -l 4-5 -n 4 --file-prefix=packet-gen -b 0000:00:08.0 -- --output-port 0000:00:09.0 --packets-per-second 30000" << std::endl;
 }
 
 int main(int argc, char **argv)
@@ -450,6 +463,46 @@ int main(int argc, char **argv)
     argc -= return_val;
     argv += return_val;
 
+    std::string output_port;
+    uint32_t packets_per_second {0};
+
+    for (uint16_t i = 0; i < argc; ++i) {
+        if (strcmp(argv[i], "--output-port") == 0) {
+            if ((i + 1) < argc) {
+                output_port = argv[i + 1];
+            } else {
+                break;
+            }
+        }
+        
+        if (strcmp(argv[i], "--packets-per-second") == 0) {
+            if ((i + 1) < argc) {
+                try {
+                    packets_per_second = std::stoi(argv[i + 1]);                       
+                }
+                catch(const std::exception& e) {
+                    std::cerr << "Invalid packets per second value specified. " << std::endl;
+                    application_usage();
+                    exit(1);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (output_port.empty()) {
+        std::cerr << "Output port not specified. " << std::endl;
+        application_usage();
+        exit(1);
+    }
+
+    if (!packets_per_second) {
+        std::cerr << "Packets per second value not specified. " << std::endl;
+        application_usage();
+        exit(1);
+    }
+
     uint16_t port_ids[RTE_MAX_ETHPORTS] = {0};
     int16_t id = 0;
     int16_t total_port_count = 0;
@@ -474,11 +527,16 @@ int main(int argc, char **argv)
 
     std::cout << "Total ports detected: " << total_port_count << std::endl;
     
+    uint16_t output_port_id = std::numeric_limits<decltype(output_port_id)>::max();
+    if (rte_eth_dev_get_port_by_name(output_port.c_str(), &output_port_id)) {
+        std::cerr << "Unable to get port id against port: " << output_port << std::endl;
+    }
+
     // Check about the RX/TX offloading support of current ethernet device.
     // A ethernet device from different vendors (Intel, Nvidia, Broadcom etc.) supports different Rx/Tx offloading capabilities.
     // So we first check which Rx/Tx offloading capabilities are supported by our ether device.
     rte_eth_dev_info devInfo;
-    if (!check_device_offloading_support(port_ids[0], devInfo)) {
+    if (!check_device_offloading_support(output_port_id, devInfo)) {
         rte_eal_cleanup();
         exit(1);
     }
@@ -523,81 +581,92 @@ int main(int argc, char **argv)
     };
 
     // Configure the port (ethernet interface).
-    if ((return_val = rte_eth_dev_configure(port_ids[0], rx_queues, tx_queues, &portConf)) != 0) {
-        std::cerr << "Unable to configure port. port Id: " << port_ids[0] << " Return code: "  << return_val << std::endl;
+    if ((return_val = rte_eth_dev_configure(output_port_id, rx_queues, tx_queues, &portConf)) != 0) {
+        std::cerr << "Unable to configure port. port Id: " << output_port_id << " Return code: "  << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    const int16_t portSocketId = rte_eth_dev_socket_id(port_ids[0]);
+    const int16_t portSocketId = rte_eth_dev_socket_id(output_port_id);
     const int16_t coreSocketId = rte_socket_id();
 
     // Configure the Rx queue(s) of the port.
     for (uint16_t i = 0; i < rx_queues; i++) {
-        return_val = rte_eth_rx_queue_setup(port_ids[0], i, 256, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pool);
+        return_val = rte_eth_rx_queue_setup(output_port_id, i, 256, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr, memory_pool);
         
         if (return_val < 0) {
-            std::cerr << "Unable to setup RX queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
+            std::cerr << "Unable to setup RX queue " << i << " Port Id: " << output_port_id << "Return code: " << return_val << std::endl;
             rte_eal_cleanup();
             exit(1);
         }
 
-        std::cout << "Port Id: " << port_ids[0] << " Rx Queue: " << i << " setup successful. Socket id: "   
+        std::cout << "Port Id: " << output_port_id << " Rx Queue: " << i << " setup successful. Socket id: "   
                   << ((portSocketId >= 0) ? portSocketId : coreSocketId) << std::endl;
     }
 
     // Configure the Tx queue(s) of the port.
     for (uint16_t i = 0; i < tx_queues; i++) {
-        return_val = rte_eth_tx_queue_setup(port_ids[0], i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr);
+        return_val = rte_eth_tx_queue_setup(output_port_id, i, 1024, ((portSocketId >= 0) ? portSocketId : coreSocketId), nullptr);
         
         if (return_val < 0) {
-            std::cerr << "Unable to setup TX queue " << i << " Port Id: " << port_ids[0] << "Return code: " << return_val << std::endl;
+            std::cerr << "Unable to setup TX queue " << i << " Port Id: " << output_port_id << "Return code: " << return_val << std::endl;
             rte_eal_cleanup();
             exit(1);
         }
 
-        std::cout << "Port Id: " << port_ids[0] << " Tx Queue: " << i << " setup successful. Port socket id: " << portSocketId 
+        std::cout << "Port Id: " << output_port_id << " Tx Queue: " << i << " setup successful. Port socket id: " << portSocketId 
                   << " Core socket id: " << coreSocketId << std::endl;
     }
 
     // Enable promiscuous mode on the port. Not all the DPDK drivers provide the functionality to enable promiscuous mode. So we are going to 
     // ignore the result if the API fails.
-    return_val = rte_eth_promiscuous_enable(port_ids[0]);
+    return_val = rte_eth_promiscuous_enable(output_port_id);
     if (return_val < 0) {
-        std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << port_ids[0] << " Return code: " << return_val << " Ignoring ... " << std::endl;
+        std::cout << "Warning: Unable to set the promiscuous mode for port Id: " << output_port_id << " Return code: " << return_val << " Ignoring ... " << std::endl;
     }
 
     // All the configuration is done. Finally starting the port (ethernet interface) so that we can start transmitting the packets.
-    return_val = rte_eth_dev_start(port_ids[0]);
+    return_val = rte_eth_dev_start(output_port_id);
     if (return_val < 0) {
-        std::cout << "Unable to start port Id: " << port_ids[0] << " Return code: " << return_val << std::endl;
+        std::cout << "Unable to start port Id: " << output_port_id << " Return code: " << return_val << std::endl;
         rte_eal_cleanup();
         exit(1);
     }
 
-    std::cout << "Port configuration successful. Port Id: " << port_ids[0] << std::endl;
+    std::cout << "Port configuration successful. Port Id: " << output_port_id << std::endl;
 
     // Prepare memory pool.
     if (!prepare_memory_pool()) {
-        rte_eth_dev_stop(port_ids[0]);
-        rte_eth_dev_close(port_ids[0]);
+        rte_eth_dev_stop(output_port_id);
+        rte_eth_dev_close(output_port_id);
         rte_eal_cleanup();
         exit(1);
     }
 
-    // Now initiating packet transmission routine on the second logical core id.    
-    uint32_t port_and_queue_id = (0 << 16) | 0;   // Port Id: 0, Queue Id: 0 packed in uint32_t.
-    if ((return_val = rte_eal_remote_launch(transmit_packets_from_interface, reinterpret_cast<void *>(&port_and_queue_id), logicalCores[1])) != 0) 
-    {
+    // Now initiating packet transmission routine on the second logical core id.
+    PacketTransmissionThreadParams *packetTransmissionThreadParams = new PacketTransmissionThreadParams;
+    packetTransmissionThreadParams->port_id = output_port_id;
+    packetTransmissionThreadParams->queue_id = 0;
+    packetTransmissionThreadParams->packets_per_second = packets_per_second;
+    if ((return_val = rte_eal_remote_launch(transmit_packets_from_interface, reinterpret_cast<void *>(packetTransmissionThreadParams), logicalCores[1])) != 0) {
         std::cerr << "Unable to launch packet transmission routine on the logical core: %d. Return code: %d" << logicalCores[1] << return_val << std::endl;
-        rte_eth_dev_stop(port_ids[0]);
-        rte_eth_dev_close(port_ids[0]);
+        rte_eth_dev_stop(output_port_id);
+        rte_eth_dev_close(output_port_id);
         rte_eal_cleanup();
         exit(1);
     }
+
+    using namespace std::literals;
+    std::this_thread::sleep_for(1000ms);
 
     // Logical core 0 will get and print nic statistics.
-    get_and_print_nic_statistics(port_ids[0]);
+    get_and_print_nic_statistics(output_port_id);
+
+    // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit the application.
+    for (uint16_t i = 1; i < logicalCores.size(); ++i) {
+        std::cout << "Waiting for logical core " << logicalCores[i] << " to join. " << std::endl;
+        rte_eal_wait_lcore(logicalCores[i]);
+    }
 
     std::cout << "Exiting DPDK program ... " << std::endl;
     rte_eal_cleanup();
