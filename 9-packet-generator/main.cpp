@@ -40,7 +40,7 @@ static std::atomic<bool> exit_indicator = false;
 struct PacketTransmissionThreadParams {
     uint16_t port_id = std::numeric_limits<decltype(port_id)>::max();
     uint16_t queue_id = std::numeric_limits<decltype(queue_id)>::max();
-    uint16_t packets_per_second = std::numeric_limits<decltype(packets_per_second)>::min();
+    uint32_t packets_per_second = std::numeric_limits<decltype(packets_per_second)>::min();
 };
 
 void terminate(int signal) 
