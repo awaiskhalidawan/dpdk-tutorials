@@ -1,5 +1,5 @@
 # DPDK Tutorials
-This repository contains DPDK tutorials.
+This repository contains DPDK (https://www.dpdk.org/) tutorials.
 
 `1-reading-a-packet-from-nic` : This tutorial explains simple steps for beginners to read a packet from NIC interface using DPDK. To execute: `sudo ./reading-a-packet-from-nic --lcores=0 -n 4 --`
 
@@ -18,6 +18,8 @@ This repository contains DPDK tutorials.
 `8-multiprocess-communication` : This tutorial explains how DPDK applications can communicate with each other via shared memory ring buffers. This tutorial implements a DPDK application which can be executed as a primary or a secondary dpdk application.Primary DPDK process sends packets to secondary DPDK process via shared memory ring buffers. To execute primary DPDK process: `sudo ./multiprocess-communication --lcores=0@0 -n 4 --proc-type=primary -- ring_buffer_1`. To execute secondary DPDK process: `sudo ./multiprocess-communication --lcores=0@0 -n 4 --proc-type=secondary -- ring_buffer_1`
 
 `9-packet-generator` : This is a DPDK based high speed packet generator. It is tested on Intel XL710 network adapter to send `10gbps (~7mpps, packet size: 214 bytes)` of traffic on one thread using Intel Core-i9 processor on Ubuntu 24 LTS operating system. To run the packet generator: `sudo ./packet-generator -l <cores_ids> -n 4 --file-prefix=packet-gen -b <port_id_to_skip> -- --output-port <output_port_id> --packets-per-second <packets_per_second>`. For example: `sudo ./packet-generator -l 4-5 -n 4 --file-prefix=packet-gen -b 0000:00:08.0 -- --output-port 0000:00:09.0 --packets-per-second 30000` will run the packet generator using cores `4` and `5`. It will use the port `0000:00:09.0` to send the packets. The packet rate will be `30000` packets per second. The port `0000:00:08.0` will be skipped by DPDK library. This parameter is optional.
+
+`10-packet-dumper` : This is a DPDK based packet dumper. It receives the packets form the port and write it on the pcap files. A user can configure multiple RX queues to enable packet dumping on high data rates. To run the packet dumper: `sudo ./packet-dumper -l 0-2 -n 4 -- --input-port 0000:00:08.0 --num-rx-queues 1`. For example: `sudo ./packet-dumper -l 0-2 -n 4 -- --input-port 0000:00:08.0 --num-rx-queues 1` will run the packet dumper using cores `0,1` and `2`. It will use the port `0000:00:08.0` to receive the packets. The number of rx queues will `1`. The output pcap files will be written in `/tmp` folder.
 
 `11-rss-toeplitz-hash-test` : This tutorial explains the functionaly of Toeplitz hash function. The Toeplitz hash function is used by NIC to distribute the packets in RSS (Receive Side Scaling).
 
