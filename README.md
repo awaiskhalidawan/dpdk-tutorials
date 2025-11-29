@@ -53,9 +53,10 @@ To run the application: `packet-classification-and-access-control -l 0 -n 4 --no
 
 ## How to build the project
 To build the project: <br />
+`cd dpdk-tutorials` <br />
 `mkdir build` <br />
 `cd build` <br />
-`cmake ..` <br />
+`cmake -DCMAKE_BUILD_TYPE=Debug ..` <br />
 `make` <br />
 
 The binaries will be generated in `bin` folder.
