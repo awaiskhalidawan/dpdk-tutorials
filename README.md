@@ -59,7 +59,9 @@ For example:
 3. `(mbuf->packet_type & RTE_PTYPE_L3_IPV6) == RTE_PTYPE_L3_IPV6 && (mbuf->packet_type & RTE_PTYPE_L4_TCP) == RTE_PTYPE_L4_TCP` means the packet is an IPv6 TCP packet.
 
 Different NICs supports different packet types. 
+
 To run the application: `sudo ./packet-types-check -l 0 -n 4 -- --port <PCI_ADDRESS>`.
+
 Example: `sudo ./packet-types-check -l 0 -n 4 -- --port 0000:04:00.1`.
 
 ## How to build the project
