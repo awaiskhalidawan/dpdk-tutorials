@@ -49,7 +49,18 @@ This tutorial explains the functionaly of Toeplitz hash function. The Toeplitz h
 ## 12-packet-classification-and-access-control
 This tutorial explains the functionaly of DPDK ACL (classification and access control) library. The DPDK ACL library allows the user to classify the packets on the basis of different tuple rules i.e. protocol, source/destination ip, source/destination port.  
 
-To run the application: `packet-classification-and-access-control -l 0 -n 4 --no-pci --no-huge`.
+## 13-packet-types-check
+This tutorial explains how to check the different packet types a ethernet port can classify at hardware level when the packet is received. 
+For example: When a packet is received by the port, it is parsed inside the hardware and detected packet types are set in the memory buffer field: `mbuf->packet_type`. This helps to avoid parsing the headers in the software thus saving the CPU cycles.
+
+For example:
+1. `(mbuf->packet_type & RTE_PTYPE_L3_IPV4) == RTE_PTYPE_L3_IPV4` means the packet is an IPv4 packet.
+2. `(mbuf->packet_type & RTE_PTYPE_L3_IPV4) == RTE_PTYPE_L3_IPV4 && (mbuf->packet_type & RTE_PTYPE_L4_UDP) == RTE_PTYPE_L4_UDP` means the packet is an IPv4 UDP packet.
+3. `(mbuf->packet_type & RTE_PTYPE_L3_IPV6) == RTE_PTYPE_L3_IPV6 && (mbuf->packet_type & RTE_PTYPE_L4_TCP) == RTE_PTYPE_L4_TCP` means the packet is an IPv6 TCP packet.
+
+Different NICs supports different packet types. 
+To run the application: `sudo ./packet-types-check -l 0 -n 4 -- --port <PCI_ADDRESS>`.
+Example: `sudo ./packet-types-check -l 0 -n 4 -- --port 0000:04:00.1`.
 
 ## How to build the project
 To build the project: <br />
