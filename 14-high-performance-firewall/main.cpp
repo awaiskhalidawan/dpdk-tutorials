@@ -41,8 +41,8 @@ constexpr uint16_t STATISTICS_DISPLAY_INTERVAL_MSEC   = 1000;        // 1 second
 constexpr uint32_t MEMORY_POOL_SIZE                   = 131071;      // Size of memory pool.
 constexpr uint32_t RX_BURST_SIZE                      = 64;          // Rx burst size.
 constexpr uint32_t TX_BURST_SIZE                      = 64;          // Tx burst size.
-constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS           = 8160;        // Number of descriptors configured for Rx queue.
-constexpr uint32_t NUM_QUEUE_TX_DESCRIPTORS           = 8160;        // Number of descriptors configured for Tx queue.
+constexpr uint32_t NUM_QUEUE_RX_DESCRIPTORS           = 1024;        // Number of descriptors configured for Rx queue.
+constexpr uint32_t NUM_QUEUE_TX_DESCRIPTORS           = 1024;        // Number of descriptors configured for Tx queue.
 //constexpr uint32_t DATA_PLANE_ACL_RULES_CHECK_TIME_MS   = 1000;	     // Data plane acl rules check interval in ms.
 //constexpr uint32_t RULE_MANAGER_ACL_RULES_CHECK_TIME_MS = 1000;	     // Rule manager acl rules check interval in ms.
 constexpr uint32_t TX_BUFFER_FLUSH_TIME_US            = 100;	     // Transmit buffer flush time in us.
@@ -103,6 +103,9 @@ int read_and_process_packets_from_port(void *param)
     const uint16_t queue_id = packetReadingThreadParams->queue_id;
     delete packetReadingThreadParams;
 
+    printf("Starting packet reading routine. Input port: %s  Input port id: %u  Output port id: %u  Queue id: %u  Logical core id (CPU Id): %d \n", 
+            input_port.c_str(), input_port_id, output_port_id, queue_id, rte_lcore_id());
+
     const std::string memzone_name = input_port + "_" + std::to_string(queue_id);
     const rte_memzone *const memzone = rte_memzone_lookup(memzone_name.c_str());
     if (!memzone) {
@@ -119,9 +122,6 @@ int read_and_process_packets_from_port(void *param)
         std::cerr << "ACL context ipv4 is not valid. Cannot continue. " << std::endl;
         exit(2);
     }*/
-
-    printf("Starting packet reading routine. Input port: %s  Input port id: %u  Output port id: %u  Queue id: %u  Logical core id (CPU Id): %d \n", 
-            input_port.c_str(), input_port_id, output_port_id, queue_id, rte_lcore_id());
 
     uint64_t rx_count = 0;
     uint64_t tx_count = 0;
@@ -230,7 +230,8 @@ int read_and_process_packets_from_port(void *param)
         rte_pktmbuf_free_bulk(ipv6_rx_packets, ipv6_rx_packet_count);
     }
     
-    std::cout << "Exiting packet reading routine. " << std::endl;
+    std::cout << "Exiting packet reading routine. Logical core id: " << rte_lcore_id() << std::endl;
+
     return 0;
 }
 
@@ -239,9 +240,9 @@ void print_statistics(const std::string &input_port,
                       const std::string &output_port,
                       const uint16_t output_port_id,
                       const uint16_t num_rx_queues,
-                      const std::vector<PacketReadingThreadStatistics *> &packet_reading_thread_statistics)
+                      const std::vector<PacketReadingThreadStatistics *> &packet_reading_thread_statistics,
+                      const uint64_t time_difference_ms)
 {
-    std::chrono::time_point<std::chrono::system_clock> t1 = std::chrono::system_clock::now();
     rte_eth_stats istats {};
     rte_eth_stats ostats {};
     static thread_local uint64_t ilast_rx_bytes {0};
@@ -250,7 +251,6 @@ void print_statistics(const std::string &input_port,
     static thread_local uint64_t ilast_tx_packets {0};
     static thread_local uint64_t olast_tx_bytes {0};
     static thread_local uint64_t olast_tx_packets {0};
-    static thread_local std::chrono::time_point<std::chrono::system_clock> t2 {};
 
     int return_val = rte_eth_stats_get(input_port_id, &istats);
     if (return_val) {
@@ -259,17 +259,14 @@ void print_statistics(const std::string &input_port,
         return;
     }
 
-    const auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
-    t2 = t1;
-
-    double rx_packet_rate = (static_cast<double>(istats.ipackets - ilast_rx_packets) / (static_cast<double>(diff.count()) / 1000.0));
+    double rx_packet_rate = (static_cast<double>(istats.ipackets - ilast_rx_packets) / (static_cast<double>(time_difference_ms) / 1000.0));
     ilast_rx_packets = istats.ipackets;
-    double tx_packet_rate = (static_cast<double>(istats.opackets - ilast_tx_packets) / (static_cast<double>(diff.count()) / 1000.0));
+    double tx_packet_rate = (static_cast<double>(istats.opackets - ilast_tx_packets) / (static_cast<double>(time_difference_ms) / 1000.0));
     ilast_tx_packets = istats.opackets;
 
-    double rx_data_rate = (static_cast<double>((istats.ibytes - ilast_rx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+    double rx_data_rate = (static_cast<double>((istats.ibytes - ilast_rx_bytes) * 8) / (static_cast<double>(time_difference_ms) / 1000.0)) / (1024.0 * 1024.0);
     ilast_rx_bytes = istats.ibytes;
-    double tx_data_rate = (static_cast<double>((istats.obytes - ilast_tx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+    double tx_data_rate = (static_cast<double>((istats.obytes - ilast_tx_bytes) * 8) / (static_cast<double>(time_difference_ms) / 1000.0)) / (1024.0 * 1024.0);
     ilast_tx_bytes = istats.obytes;
 
     auto now = std::chrono::system_clock::now();
@@ -328,9 +325,9 @@ void print_statistics(const std::string &input_port,
             return;
         }
 
-        tx_packet_rate = (static_cast<double>(ostats.opackets - olast_tx_packets) / (static_cast<double>(diff.count()) / 1000.0));
+        tx_packet_rate = (static_cast<double>(ostats.opackets - olast_tx_packets) / (static_cast<double>(time_difference_ms) / 1000.0));
         olast_tx_packets = ostats.opackets;
-        tx_data_rate = (static_cast<double>((ostats.obytes - olast_tx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
+        tx_data_rate = (static_cast<double>((ostats.obytes - olast_tx_bytes) * 8) / (static_cast<double>(time_difference_ms) / 1000.0)) / (1024.0 * 1024.0);
         olast_tx_bytes = ostats.obytes;
         std::cout << "Output Ethernet Port: " << output_port << " [" << output_port_id << "] Statistics" << std::endl;
         std::cout << "----------------------------------------------" << std::endl;
@@ -343,6 +340,8 @@ void print_statistics(const std::string &input_port,
         std::cout << "----------------------------------------------" << std::endl;
         std::cout << std::endl;
     }
+
+    std::cout << std::endl << "Note: Press (CTRL + C) to stop showing statistics. " << std::endl;
 }
 
 void cleanup(const std::string input_port, const uint16_t input_port_id, const uint16_t output_port_id, const uint16_t num_rx_queues)
@@ -548,7 +547,9 @@ bool configure_eth_port(const std::string port,
         return false;
     }
 
-    std::cout << "Port configuration successful. Port Id: " << port_id << std::endl;
+    printf("Port configuration successful. Port: %s  Port Id: %u  Rx queues: %u  Tx queues: %u  Rx queue size: %u  Tx queue size: %u \n",
+           port.c_str(), port_id, num_rx_queues, num_tx_queues, num_rx_queues_descriptors, num_tx_queues_descriptors);
+
     return true;
 }
 
@@ -758,14 +759,13 @@ int main(int argc, char **argv)
     }
     lcoreIdx++;*/
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::cout << std::endl << "... Firewall application started successfully ... " << std::endl << std::endl;
+
     while (!exit_application.load(std::memory_order_relaxed)) {
         std::string command;
         std::cout << "Enter command: ";
         std::getline(std::cin, command);
-
-        if (command.empty()) {
-            continue;
-        }
 
         if (command == "show_statistics") {
             std::chrono::time_point<std::chrono::system_clock> t1 = std::chrono::system_clock::now();
@@ -775,7 +775,7 @@ int main(int argc, char **argv)
                 const auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
 
                 if (diff.count() >= STATISTICS_DISPLAY_INTERVAL_MSEC) {
-                    print_statistics(input_port, input_port_id, output_port, output_port_id, num_rx_queues, packet_reading_thread_statistics);
+                    print_statistics(input_port, input_port_id, output_port, output_port_id, num_rx_queues, packet_reading_thread_statistics, diff.count());
                     t1 = t2;
                 }
 
@@ -783,16 +783,17 @@ int main(int argc, char **argv)
                 std::this_thread::sleep_for(50ms);
             }
         } else if (command == "exit") {
+            std::cout << "Exiting application ... " << std::endl;
             terminate_signal_handler(0);
         } else {
             std::cout << "Invalid command. Valid commands are:                         " << std::endl;
             std::cout << "  show_statistics       [Print the application statistics]   " << std::endl;
             std::cout << "  exit                  [Exits the application]              " << std::endl;
+            std::cout << std::endl;
         }
     }
 
-    std::cout << "Exiting application ... " << std::endl;
-
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     // Now we will wait for all the lcores (except main lcore = 0) to finish before we exit the application.
     for (uint16_t i = 1; i < logical_cores.size(); ++i) {
         std::cout << "Waiting for logical core " << logical_cores[i] << " to join. " << std::endl;
@@ -800,6 +801,7 @@ int main(int argc, char **argv)
     }
 
     cleanup(input_port, input_port_id, output_port_id, num_rx_queues);
+
     return 0;
 }
 
