@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include <iostream>
+#include <thread>
 #include <csignal>
 #include <vector>
 #include <list>
@@ -33,6 +34,7 @@
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
+#include <rte_memzone.h>
 //#include <rule_manager.hpp>
 
 constexpr uint16_t STATISTICS_DISPLAY_INTERVAL_MSEC   = 1000;        // 1 seconds.
@@ -44,9 +46,10 @@ constexpr uint32_t NUM_QUEUE_TX_DESCRIPTORS           = 8160;        // Number o
 //constexpr uint32_t DATA_PLANE_ACL_RULES_CHECK_TIME_MS   = 1000;	     // Data plane acl rules check interval in ms.
 //constexpr uint32_t RULE_MANAGER_ACL_RULES_CHECK_TIME_MS = 1000;	     // Rule manager acl rules check interval in ms.
 constexpr uint32_t TX_BUFFER_FLUSH_TIME_US            = 100;	     // Transmit buffer flush time in us.
+constexpr uint32_t DEFAULT_MAX_CATEGORIES             = 1;
 
 static std::atomic<bool> exit_application {false};
-static std::atomic<bool> stop_printing_statistics {true}:
+static std::atomic<bool> stop_printing_statistics {true};
 
 struct PacketReadingThreadParams 
 {
@@ -101,7 +104,7 @@ int read_and_process_packets_from_port(void *param)
     delete packetReadingThreadParams;
 
     const std::string memzone_name = input_port + "_" + std::to_string(queue_id);
-    rte_memzone *const memzone = rte_memzone_lookup(memzone_name.c_str());
+    const rte_memzone *const memzone = rte_memzone_lookup(memzone_name.c_str());
     if (!memzone) {
         std::cerr << "Unable to lookup shared memory zone: " << memzone_name << std::endl;
         exit(2);
@@ -174,7 +177,7 @@ int read_and_process_packets_from_port(void *param)
         }
 
         // Update the statistics.
-        packet_reading_thread_statistics.rx_packets.fetch_add(rx_count, std::memory_order_relaxed);
+        packet_reading_thread_statistics->rx_packets.fetch_add(rx_count, std::memory_order_relaxed);
 
         // Reset the local counters.
         ipv4_rx_packet_count = 0;
@@ -194,9 +197,9 @@ int read_and_process_packets_from_port(void *param)
         }
 
         // Update statistics.
-        packet_reading_thread_statistics.unknown_type_rx_packets.fetch_add(unknown_type_rx_packet_count, std::memory_order_relaxed);
-	    packet_reading_thread_statistics.ipv4_rx_packets.fetch_add(ipv4_rx_packet_count, std::memory_order_relaxed);
-        packet_reading_thread_statistics.ipv6_rx_packets.fetch_add(ipv6_rx_packet_count, std::memory_order_relaxed);
+        packet_reading_thread_statistics->unknown_type_rx_packets.fetch_add(unknown_type_rx_packet_count, std::memory_order_relaxed);
+	    packet_reading_thread_statistics->ipv4_rx_packets.fetch_add(ipv4_rx_packet_count, std::memory_order_relaxed);
+        packet_reading_thread_statistics->ipv6_rx_packets.fetch_add(ipv6_rx_packet_count, std::memory_order_relaxed);
 	
 	    // Free the received packets which are not identified.
         rte_pktmbuf_free_bulk(rx_packets, rx_count);
@@ -241,22 +244,23 @@ void print_statistics(const std::string &input_port,
     std::chrono::time_point<std::chrono::system_clock> t1 = std::chrono::system_clock::now();
     rte_eth_stats istats {};
     rte_eth_stats ostats {};
-    static thread_local uint64_t ilast_rx_bytes = 0;
-    static thread_local uint64_t ilast_tx_bytes = 0;
-    static thread_local uint64_t ilast_rx_packets = 0;
-    static thread_local uint64_t ilast_tx_packets = 0;
-    static thread_local uint64_t olast_tx_bytes = 0;
-    static thread_local uint64_t olast_tx_packets = 0;
+    static thread_local uint64_t ilast_rx_bytes {0};
+    static thread_local uint64_t ilast_tx_bytes {0};
+    static thread_local uint64_t ilast_rx_packets {0};
+    static thread_local uint64_t ilast_tx_packets {0};
+    static thread_local uint64_t olast_tx_bytes {0};
+    static thread_local uint64_t olast_tx_packets {0};
+    static thread_local std::chrono::time_point<std::chrono::system_clock> t2 {};
 
     int return_val = rte_eth_stats_get(input_port_id, &istats);
     if (return_val) {
         printf("Unable to get input port statistics. Input port: %s  Input port id: %u  Return value: %d \n",
                input_port.c_str(), input_port_id, return_val);
-        continue;
+        return;
     }
 
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    const auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
+    t2 = t1;
 
     double rx_packet_rate = (static_cast<double>(istats.ipackets - ilast_rx_packets) / (static_cast<double>(diff.count()) / 1000.0));
     ilast_rx_packets = istats.ipackets;
@@ -267,6 +271,9 @@ void print_statistics(const std::string &input_port,
     ilast_rx_bytes = istats.ibytes;
     double tx_data_rate = (static_cast<double>((istats.obytes - ilast_tx_bytes) * 8) / (static_cast<double>(diff.count()) / 1000.0)) / (1024.0 * 1024.0);
     ilast_tx_bytes = istats.obytes;
+
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
 
     std::cout << "\033[2J\033[1;1H";        
     std::cout << std::endl;
@@ -318,7 +325,7 @@ void print_statistics(const std::string &input_port,
         if (return_val) {
             printf("Unable to get output port statistics. Output port: %s  Output port id: %u  Return value: %d \n",
                    output_port.c_str(), output_port_id, return_val);
-            continue;
+            return;
         }
 
         tx_packet_rate = (static_cast<double>(ostats.opackets - olast_tx_packets) / (static_cast<double>(diff.count()) / 1000.0));
@@ -350,7 +357,7 @@ void cleanup(const std::string input_port, const uint16_t input_port_id, const u
 
     for (uint16_t i = 0; i < num_rx_queues; ++i) {
         const std::string memzone_name = input_port + "_" + std::to_string(i);
-        rte_memzone *const memzone = rte_memzone_lookup(memzone_name.c_str());
+        const rte_memzone *const memzone = rte_memzone_lookup(memzone_name.c_str());
         if (memzone) {
             rte_memzone_free(memzone);
         } else {
@@ -491,7 +498,7 @@ bool configure_eth_port(const std::string port,
     const int core_socket_id = rte_socket_id();
 
     if ((port_socket_id != SOCKET_ID_ANY) && port_socket_id != core_socket_id) {
-        printf("Port socket id: %d is not same as core socket id: %d. Performance will be impacted. Select the logical core which has same socket id as of port socket id \n");
+        printf("Port socket id: %d is not same as core socket id: %d. Performance will be impacted. Select the logical core which has same socket id as of port socket id \n", port_socket_id, core_socket_id);
         return false;
     }
 
@@ -555,11 +562,11 @@ int main(int argc, char **argv)
     std::cout << "Starting firewall ... " << std::endl;
 
     // Setting up signals to catch TERM and INT signal.
-    sigaction action {};
-    memset(&action, 0, sizeof(sigaction));
+    struct sigaction action {};
+    memset(&action, 0, sizeof(struct sigaction));
     action.sa_handler = terminate_signal_handler;
     sigaction(SIGTERM, &action, nullptr);
-    memset(&action, 0, sizeof(sigaction));
+    memset(&action, 0, sizeof(struct sigaction));
     action.sa_handler = interrupt_signal_handler;
     sigaction(SIGINT, &action, nullptr);
 
@@ -696,7 +703,7 @@ int main(int argc, char **argv)
         }
 
         const std::string memzone_name = input_port + "_" + std::to_string(i);
-        rte_memzone *const memzone = rte_memzone_reserve(memzone_name.c_str(),
+        const rte_memzone *const memzone = rte_memzone_reserve(memzone_name.c_str(),
                                                          sizeof(PacketReadingThreadStatistics),
                                                          rte_socket_id(),
                                                          RTE_MEMZONE_SIZE_HINT_ONLY);
@@ -710,14 +717,14 @@ int main(int argc, char **argv)
     }
 
     // Configure the input/output ethernet port.
-    if (!configure_eth_port(input_port_id, num_rx_queues, ((input_port_id == output_port_id) ? num_rx_queues : 0), NUM_QUEUE_RX_DESCRIPTORS, NUM_QUEUE_TX_DESCRIPTORS)) {
+    if (!configure_eth_port(input_port, input_port_id, num_rx_queues, ((input_port_id == output_port_id) ? num_rx_queues : 0), NUM_QUEUE_RX_DESCRIPTORS, NUM_QUEUE_TX_DESCRIPTORS)) {
         cleanup(input_port, input_port_id, output_port_id, num_rx_queues);
         exit(1);
     }
 
     if (input_port_id != output_port_id) {
         // Configure the output ethernet port. (The tx queues of output port must be same as rx queues of input port).
-        if (!configure_eth_port(output_port_id, 0, num_rx_queues, NUM_QUEUE_RX_DESCRIPTORS, NUM_QUEUE_TX_DESCRIPTORS, memory_pools)) {
+        if (!configure_eth_port(output_port, output_port_id, 0, num_rx_queues, NUM_QUEUE_RX_DESCRIPTORS, NUM_QUEUE_TX_DESCRIPTORS)) {
             cleanup(input_port, input_port_id, output_port_id, num_rx_queues);
             exit(1);
         }
