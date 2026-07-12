@@ -64,6 +64,41 @@ To run the application: `sudo ./packet-types-check -l 0 -n 4 -- --port <PCI_ADDR
 
 Example: `sudo ./packet-types-check -l 0 -n 4 -- --port 0000:04:00.1`.
 
+## 15-rte-flow
+This tutorial explains the DPDK Flow API (`rte_flow`). The Flow API lets an application program the NIC hardware classifier to match packet patterns and apply actions (redirect to an RX queue, drop, etc.) before packets reach the CPU. This offloads filtering and steering from software classification (see tutorial 12 ACL) and software RSS distribution (see tutorial 06).
+
+This tutorial is tested on the **Intel XL710** network adapter (Ethernet Controller XL710 for 40GbE QSFP+, i40e PMD) using the following test environment:
+
+- Two XL710 ports are connected directly with a **loopback cable** (e.g. `0000:04:00.0` and `0000:04:00.1`).
+- Tutorial 09 (`packet-generator`) transmits traffic on one port.
+- `rte-flow` receives traffic on the other port and verifies hardware redirect, drop, and default-queue behavior.
+
+The application:
+1. Configures multiple RX queues on a port.
+2. Queries basic flow engine information for the NIC.
+3. Validates and installs two hardware flow rules:
+   - Match IPv4/UDP destination port (`--redirect-port`) and redirect those packets to `--target-queue`.
+   - Match IPv4/UDP destination port (`--drop-port`) and drop those packets in hardware.
+4. Polls each RX queue on a dedicated lcore and prints per-queue packet counters so you can observe hardware steering.
+
+Unmatched traffic remains on queue 0. Traffic matching the drop rule should not appear on any queue.
+
+**Note:** Flow item and action support varies by NIC/PMD (for example ixgbe, i40e, mlx5). If `rte_flow_validate` fails, the driver error message indicates which match or action is unsupported on your adapter.
+
+To run:
+`sudo ./rte-flow -l 0-2 -n 4 -- --port <PCI_ADDRESS> --num-rx-queues 2 --redirect-port 5000 --drop-port 5001 --target-queue 1`
+
+Example:
+`sudo ./rte-flow -l 0-2 -n 4 -- --port 0000:04:00.1 --num-rx-queues 2 --redirect-port 5000 --drop-port 5001 --target-queue 1`
+
+**Test setup example:** Run `packet-generator` on the first port and `rte-flow` on the second port (connected via loopback cable):
+
+`sudo ./packet-generator -l 4-5 -n 4 --file-prefix=packet-gen -b 0000:04:00.1 -- --output-port 0000:04:00.0 --packets-per-second 100000`
+
+`sudo ./rte-flow -l 0-2 -n 4 --file-prefix=rte-flow -b 0000:04:00.0 -- --port 0000:04:00.1 --num-rx-queues 2 --redirect-port 5000 --drop-port 5001 --target-queue 1`
+
+Vary the UDP destination port in test traffic (5000 / 5001 / other) to verify queue redirects, hardware drops, and default-queue behavior. The packet generator cycles UDP destination ports across a range; align `--redirect-port` and `--drop-port` with the ports your generator emits, or adjust the generator accordingly.
+
 ## How to build the project
 To build the project: <br />
 `cd dpdk-tutorials` <br />
