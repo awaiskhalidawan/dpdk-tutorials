@@ -64,6 +64,40 @@ To run the application: `sudo ./packet-types-check -l 0 -n 4 -- --port <PCI_ADDR
 
 Example: `sudo ./packet-types-check -l 0 -n 4 -- --port 0000:04:00.1`.
 
+## 14-ipsec-outbound
+This tutorial explains outbound IPsec ESP processing with the DPDK IPsec library (`librte_ipsec`). The application receives cleartext IPv4 traffic on an Ethernet port, encrypts it using a static Security Association (SA), and transmits the ESP frames back on the **same port**.
+
+This tutorial is tested on the **Intel XL710** network adapter. The XL710 (i40e PMD) does not support inline IPsec offload, so encryption runs through a software `cryptodev` device (`crypto_null` PMD). The `crypto_null` driver exercises the full `rte_ipsec` + `cryptodev` pipeline but does not perform real AES-GCM — it is intended for learning the data path.
+
+The application:
+1. Creates a virtual `crypto_null0` cryptodev (via EAL `--vdev`).
+2. Configures one RX queue and one TX queue on the same port.
+3. Installs a static outbound ESP transport-mode SA (fixed SPI).
+4. Runs packet I/O on a **worker lcore** (RX → `rte_ipsec_pkt_crypto_prepare` → cryptodev → `rte_ipsec_pkt_process` → TX).
+5. The **main lcore** prints statistics once per second.
+
+**Note:** IKE and dynamic SA negotiation are out of scope. Inbound decrypt is not implemented in this tutorial.
+
+To run:
+`sudo ./ipsec-outbound -l 0-1 -n 4 --vdev crypto_null0 -- --port <PCI_ADDRESS>`
+
+Example:
+`sudo ./ipsec-outbound -l 0-1 -n 4 --vdev crypto_null0 -- --port 0000:04:00.1`
+
+Requires **2 logical cores**: lcore 0 (main/statistics) and lcore 1 (RX/IPsec/TX worker).
+
+Optional PCAP dump of outbound ESP packets (using the same `packet_dumper` approach as tutorial 10):
+
+`sudo ./ipsec-outbound -l 0-1 -n 4 --vdev crypto_null0 -- --port 0000:04:00.1 --dump-pcap`
+
+`--dump-dir <directory>` sets the output directory (default `/tmp`). Files are named `ipsec_outbound_<thread>_<timestamp>_<n>.cap`.
+
+**Test setup example:** Run `packet-generator` on the first port and `ipsec-outbound` on the second port (connected via loopback cable). Cleartext arrives on the IPsec port; encrypted ESP packets are transmitted back on that same port and return over the loopback cable:
+
+`sudo ./packet-generator -l 4-5 -n 4 --file-prefix=packet-gen -b 0000:04:00.1 -- --output-port 0000:04:00.0 --packets-per-second 10000`
+
+`sudo ./ipsec-outbound -l 0-1 -n 4 --file-prefix=ipsec --vdev crypto_null0 -b 0000:04:00.0 -- --port 0000:04:00.1 --dump-pcap`
+
 ## 15-rte-flow
 This tutorial explains the DPDK Flow API (`rte_flow`). The Flow API lets an application program the NIC hardware classifier to match packet patterns and apply actions (redirect to an RX queue, drop, etc.) before packets reach the CPU. This offloads filtering and steering from software classification (see tutorial 12 ACL) and software RSS distribution (see tutorial 06).
 
