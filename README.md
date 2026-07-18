@@ -133,6 +133,56 @@ Example:
 
 Vary the UDP destination port in test traffic (5000 / 5001 / other) to verify queue redirects, hardware drops, and default-queue behavior. The packet generator cycles UDP destination ports across a range; align `--redirect-port` and `--drop-port` with the ports your generator emits, or adjust the generator accordingly.
 
+## 16-deep-packet-inspection
+This tutorial explains **Deep Packet Inspection (DPI)** using DPDK for packet I/O and [nDPI](https://github.com/ntop/nDPI) for application-layer protocol classification. The app receives traffic on one Ethernet port, maintains a bidirectional 5-tuple flow table, feeds each packet to nDPI, and prints per-protocol statistics on the main lcore (passive DPI — no TX / drop / forward).
+
+**Dependency:** install nDPI (tested with 4.14) before building:
+
+```bash
+git clone --depth 1 --branch 4.14 https://github.com/ntop/nDPI.git ~/nDPI
+cd ~/nDPI && ./autogen.sh && ./configure --prefix=/usr/local && make -j$(nproc) && sudo make install
+sudo ldconfig
+pkg-config --modversion libndpi
+```
+
+**Test environment** (Intel XL710 with a loopback cable between ports):
+
+| Role | PCI address | Driver | Interface example |
+|------|-------------|--------|-------------------|
+| Replay with `tcpreplay` | `0000:04:00.0` | kernel `i40e` | `enp4s0f0np0` |
+| DPI receive | `0000:04:00.1` | `vfio-pci` (DPDK) | — |
+
+Bind **only** the DPI RX port to DPDK (leave the peer on the kernel driver for `tcpreplay`):
+
+```bash
+cd ~/dpdk-stable/usertools
+sudo ./dpdk-devbind.py -b vfio-pci 0000:04:00.1 --force
+sudo ./dpdk-devbind.py -b i40e 0000:04:00.0 --force   # if previously bound to vfio-pci
+sudo ./dpdk-devbind.py --status
+```
+
+To run:
+`sudo ./deep-packet-inspection -l 0-1 -n 4 -- --port <PCI_ADDRESS>`
+
+Example:
+`sudo ./deep-packet-inspection -l 0-1 -n 4 --file-prefix=dpi -b 0000:04:00.0 -- --port 0000:04:00.1`
+
+Requires **2 logical cores**: lcore 0 (statistics) and lcore 1 (RX + nDPI worker).
+
+Optional: `--max-flows <N>` (default 65536), `--idle-timeout-sec <N>` (default 60).
+
+**Replay a real-world PCAP** into the kernel peer port (use your own capture file):
+
+```bash
+# Bring the kernel interface up
+sudo ip link set enp4s0f0np0 up
+
+# In another terminal, with deep-packet-inspection already running:
+sudo tcpreplay --intf1=enp4s0f0np0 --mbps=100 /path/to/your.pcap
+```
+
+Promiscuous mode is enabled so frames with arbitrary MACs from the PCAP are accepted. Classification often needs several packets per flow before an application name is known (UNKNOWN → DNS/HTTP/TLS/… as nDPI completes detection).
+
 ## How to build the project
 To build the project: <br />
 `cd dpdk-tutorials` <br />
