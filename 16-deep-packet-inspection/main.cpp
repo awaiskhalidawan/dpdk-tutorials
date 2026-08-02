@@ -443,7 +443,6 @@ int main(int argc, char **argv)
     }
 
     std::cout << "Port configuration successful. Passive DPI on port Id: " << port_id << std::endl;
-    std::cout << "Replay traffic into the peer port with tcpreplay (kernel driver)." << std::endl;
 
     auto *worker_params = new DpiWorkerParams;
     worker_params->port_id = port_id;
