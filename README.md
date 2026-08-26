@@ -99,7 +99,7 @@ Optional PCAP dump of outbound ESP packets (using the same `packet_dumper` appro
 `sudo ./ipsec-outbound -l 0-1 -n 4 --file-prefix=ipsec --vdev crypto_null0 -b 0000:04:00.0 -- --port 0000:04:00.1 --dump-pcap`
 
 ## 15-rte-flow
-This tutorial explains the DPDK Flow API (`rte_flow`). The Flow API lets an application program the NIC hardware classifier to match packet patterns and apply actions (redirect to an RX queue, drop, etc.) before packets reach the CPU. This offloads filtering and steering from software classification (see tutorial 12 ACL) and software RSS distribution (see tutorial 06).
+This tutorial explains the DPDK Flow API (`rte_flow`). The Flow API lets an application program the NIC hardware classifier to match packet patterns and apply actions (redirect to an RX queue, drop, etc.) inside the NIC (Network Interface Card) before packets reach the CPU.
 
 This tutorial is tested on the **Intel XL710** network adapter (Ethernet Controller XL710 for 40GbE QSFP+, i40e PMD) using the following test environment:
 
