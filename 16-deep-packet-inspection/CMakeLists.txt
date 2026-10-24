@@ -14,16 +14,8 @@ include(../dpdk-tutorials.cmake)
 target_include_directories(${TARGET_NAME} PRIVATE ${NDPI_INCLUDE_DIRS})
 target_compile_options(${TARGET_NAME} PRIVATE ${NDPI_CFLAGS_OTHER})
 
-target_compile_definitions(${TARGET_NAME} PRIVATE
-  RTE_SDK=/usr/local/
-  RTE_TARGET=x86_64-default-linuxapp-gcc
-)
+message("NDPI library version: ${NDPI_VERSION}")
 
 target_link_libraries(${TARGET_NAME} PUBLIC
   ${NDPI_LIBRARIES}
-  -lrte_eal
-  -lrte_ethdev
-  -lrte_mempool
-  -lrte_mbuf
-  -lrte_net
 )

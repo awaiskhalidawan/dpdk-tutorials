@@ -2,13 +2,28 @@ cmake_minimum_required(VERSION 3.16)
 
 project(DpdkTutorials)
 
-set(CMAKE_INCLUDE_CURRENT_DIR ON)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(DPDK REQUIRED libdpdk)
 
+message("DPDK library version: ${DPDK_VERSION}")
+
+if(NOT DPDK_VERSION VERSION_EQUAL "24.11.2")
+  message(FATAL_ERROR "DPDK version 24.11.2 is required. Currently installed version is: ${DPDK_VERSION}")
+endif()
+
+set(ALLOWED_BUILD_TYPES Debug Release RelWithDebInfo MinSizeRel)
+if(NOT CMAKE_BUILD_TYPE IN_LIST ALLOWED_BUILD_TYPES)
+  message(FATAL_ERROR
+    "Invalid CMAKE_BUILD_TYPE: '${CMAKE_BUILD_TYPE}'. "
+    "Must be one of: ${ALLOWED_BUILD_TYPES}")
+endif()
+
+message("Build type: ${CMAKE_BUILD_TYPE}")
+
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++23 -msse4")
-set(CMAKE_BUILD_TYPE Debug)
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 add_subdirectory(01-reading-a-packet-from-nic)
