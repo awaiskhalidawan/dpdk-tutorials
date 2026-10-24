@@ -184,14 +184,29 @@ sudo tcpreplay --intf1=enp4s0f0np0 --mbps=100 /path/to/your.pcap
 Promiscuous mode is enabled so frames with arbitrary MACs from the PCAP are accepted. Classification often needs several packets per flow before an application name is known (UNKNOWN → DNS/HTTP/TLS/… as nDPI completes detection).
 
 ## How to build the project
-To build the project: <br />
+To install DPDK library: <br />
+`cd /opt/` <br />
+`sudo mkdir dpdk_25.11.4` <br />
+`cd ~` <br />
+`git clone git@github.com:DPDK/dpdk-stable.git` <br />
+`cd dpdk-stable` <br />
+`git checkout v25.11.4` <br />
+`meson setup -Dplatform=generic --prefix /opt/dpdk_25.11.4/ build` <br />
+`ninja -C build` <br />
+`sudo ninja install -C build` <br />
+
+(DPDK library will be installed to directory: `/opt/dpdk_25.11.4`) <br /> <br />
+
+To build the dpdk-tutorials: <br />
+`cd ~` <br />
+`git clone git@github.com:awaiskhalidawan/dpdk-tutorials.git` <br />
 `cd dpdk-tutorials` <br />
 `mkdir build` <br />
 `cd build` <br />
-`cmake -DCMAKE_BUILD_TYPE=Debug ..` <br />
+`PKG_CONFIG_PATH=/opt/dpdk_25.11.4/lib/x86_64-linux-gnu/pkgconfig cmake -DCMAKE_BUILD_TYPE=Debug ..` <br />
 `make` <br />
 
-The binaries will be generated in `bin` folder.
+The dpdk-tutorial binaries will be generated in: `~/dpdk-tutorials/bin` <br />
 
 ## Support
 For any queries or problems feel free to reach at awais.khalid.awan@gmail.com

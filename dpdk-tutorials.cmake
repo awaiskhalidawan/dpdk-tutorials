@@ -1,7 +1,7 @@
 target_include_directories(${TARGET_NAME} PRIVATE ${DPDK_INCLUDE_DIRS})
 
 target_link_libraries(${TARGET_NAME} PUBLIC
-  ${DPDK_LIBRARIES}
+  ${DPDK_LINK_LIBRARIES}
 )
 
 install(TARGETS ${TARGET_NAME}

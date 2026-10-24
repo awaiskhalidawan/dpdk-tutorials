@@ -125,10 +125,6 @@ void print_statistics(const uint16_t port_id, const uint16_t num_rx_queues,
             std::cout << "  imissed (Rx queue full):     " << nic_stats.imissed << std::endl;
             std::cout << "  ierrors:                     " << nic_stats.ierrors << std::endl;
             std::cout << "  rx_nombuf:                   " << nic_stats.rx_nombuf << std::endl;
-            for (uint16_t i = 0; i < num_rx_queues; ++i) {
-                std::cout << "  q_ipackets[" << i << "] (NIC queue): "
-                          << nic_stats.q_ipackets[i] << std::endl;
-            }
             std::cout << "  app_rx_total (q0+q1):        " << app_rx_total << std::endl;
             if (nic_stats.ipackets >= app_rx_total) {
                 std::cout << "  nic_ipackets - app_rx_total: "

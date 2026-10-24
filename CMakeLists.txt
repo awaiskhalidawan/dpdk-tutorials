@@ -7,9 +7,11 @@ pkg_check_modules(DPDK REQUIRED libdpdk)
 
 message("DPDK library version: ${DPDK_VERSION}")
 
-if(NOT DPDK_VERSION VERSION_EQUAL "24.11.2")
-  message(FATAL_ERROR "DPDK version 24.11.2 is required. Currently installed version is: ${DPDK_VERSION}")
+if(NOT DPDK_VERSION VERSION_EQUAL "25.11.4")
+  message(FATAL_ERROR "DPDK version 25.11.4 is required. Currently installed version is: ${DPDK_VERSION}")
 endif()
+
+message("DPDK include directory path: ${DPDK_INCLUDE_DIRS}")
 
 set(ALLOWED_BUILD_TYPES Debug Release RelWithDebInfo MinSizeRel)
 if(NOT CMAKE_BUILD_TYPE IN_LIST ALLOWED_BUILD_TYPES)
