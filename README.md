@@ -184,9 +184,9 @@ sudo tcpreplay --intf1=enp4s0f0np0 --mbps=100 /path/to/your.pcap
 Promiscuous mode is enabled so frames with arbitrary MACs from the PCAP are accepted. Classification often needs several packets per flow before an application name is known (UNKNOWN → DNS/HTTP/TLS/… as nDPI completes detection).
 
 ## How to build the project
-`dpdk-tutorials` project will work with `DPDK v25.11.4` currently.
+`dpdk-tutorials` project requires DPDK library `v25.11.4`.
 
-To install DPDK library: <br />
+To install DPDK library `v25.11.4`: <br />
 `cd /opt/` <br />
 `sudo mkdir dpdk_25.11.4` <br />
 `cd ~` <br />
